@@ -1,0 +1,46 @@
+routing:
+  prefer_local: true
+  fail_threshold: 2
+  max_task_chars_for_local: 1800
+  local_retry_wait_seconds: 0
+
+local_worker:
+  provider: mock
+  model: qwen2.5-coder:7b
+  base_url: http://127.0.0.1:11434
+  num_ctx: 1024
+  timeout_seconds: 8
+  mock:
+    available: true
+    fail_on_attempts: 0
+    error: ""
+
+context:
+  max_candidate_bytes: 200000
+  max_after_bytes: 80000
+  max_depth: 7
+  max_file_candidates: 180
+  max_selected_files: 6
+
+test:
+  auto_detect: true
+  default_command: ""
+
+controls:
+  execution:
+    command_timeout_seconds: 120
+  context_circuit:
+    enabled: true
+    warning_token_bytes: 450000
+    hard_token_bytes: 900000
+    source_read_warning_bytes: 240000
+    source_read_hard_bytes: 420000
+    log_warning_bytes: 80000
+    log_hard_bytes: 120000
+    tool_output_warning_bytes: 80000
+    tool_output_hard_bytes: 120000
+    test_output_warning_bytes: 120000
+    test_output_hard_bytes: 200000
+    diff_warning_bytes: 120000
+    diff_hard_bytes: 200000
+    handoff_checkpoint_bytes: 20000

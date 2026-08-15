@@ -1,0 +1,224 @@
+schema_version: '0.3.0'
+schema:
+  type: object
+  required:
+    - routing
+    - local_worker
+    - executors
+    - context
+    - test
+    - controls
+  properties:
+    routing:
+      type: object
+      required:
+        - prefer_local
+        - fail_threshold
+        - max_task_chars_for_local
+        - local_retry_wait_seconds
+      properties:
+        prefer_local:
+          type: boolean
+        fail_threshold:
+          type: integer
+        max_task_chars_for_local:
+          type: integer
+        local_retry_wait_seconds:
+          type: integer
+    local_worker:
+      type: object
+      required:
+        - provider
+        - model
+        - base_url
+        - num_ctx
+        - timeout_seconds
+      properties:
+        provider:
+          type: string
+        model:
+          type: string
+        base_url:
+          type: string
+        num_ctx:
+          type: integer
+        timeout_seconds:
+          type: integer
+        command:
+          type: string
+        mock:
+          type: object
+          properties:
+            available:
+              type: boolean
+            fail_on_attempts:
+              type: integer
+            error:
+              type: string
+    executors:
+      type: object
+      required:
+        - command
+        - aider
+      properties:
+        command:
+          type: object
+          properties:
+            extra_args:
+              type: array
+            command_timeout_seconds:
+              type: integer
+        aider:
+          type: object
+          properties:
+            binary:
+              type: string
+            model:
+              type: string
+            extra_args:
+              type: array
+            command_timeout_seconds:
+              type: integer
+            mode:
+              type: string
+    context:
+      type: object
+      properties:
+        max_candidate_bytes:
+          type: integer
+        max_after_bytes:
+          type: integer
+        max_depth:
+          type: integer
+        max_file_candidates:
+          type: integer
+        max_selected_files:
+          type: integer
+    test:
+      type: object
+      required:
+        - auto_detect
+      properties:
+        auto_detect:
+          type: boolean
+        project_detectors:
+          type: object
+        commands:
+          type: object
+        default_command:
+          type: string
+    controls:
+      type: object
+      required:
+        - execution
+      properties:
+        execution:
+          type: object
+          required:
+            - command_timeout_seconds
+          properties:
+            command_timeout_seconds:
+              type: integer
+        context_circuit:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+            warning_token_bytes:
+              type: integer
+            hard_token_bytes:
+              type: integer
+            source_read_warning_bytes:
+              type: integer
+            source_read_hard_bytes:
+              type: integer
+            log_warning_bytes:
+              type: integer
+            log_hard_bytes:
+              type: integer
+            tool_output_warning_bytes:
+              type: integer
+            tool_output_hard_bytes:
+              type: integer
+            test_output_warning_bytes:
+              type: integer
+            test_output_hard_bytes:
+              type: integer
+            diff_warning_bytes:
+              type: integer
+            diff_hard_bytes:
+              type: integer
+            handoff_checkpoint_bytes:
+              type: integer
+
+defaults:
+  routing:
+    prefer_local: true
+    fail_threshold: 2
+    max_task_chars_for_local: 1800
+    local_retry_wait_seconds: 0
+  local_worker:
+    provider: mock
+    model: qwen2.5-coder:7b
+    base_url: http://127.0.0.1:11434
+    num_ctx: 1024
+    timeout_seconds: 8
+    mock:
+      available: true
+      fail_on_attempts: 0
+      error: ""
+  executors:
+    command:
+      extra_args: []
+      command_timeout_seconds: 120
+    aider:
+      binary: aider
+      model: ""
+      extra_args: []
+      command_timeout_seconds: 120
+      mode: real
+  context:
+    max_candidate_bytes: 200000
+    max_after_bytes: 80000
+    max_depth: 7
+    max_file_candidates: 180
+    max_selected_files: 6
+  test:
+    auto_detect: true
+    project_detectors:
+      python:
+        - pyproject.toml
+        - requirements.txt
+        - setup.py
+        - pytest.ini
+      node:
+        - package.json
+      go:
+        - go.mod
+      unknown: []
+    commands:
+      python:
+        - auto
+      node:
+        - auto
+      go:
+        - auto
+    default_command: ""
+  controls:
+    execution:
+      command_timeout_seconds: 120
+    context_circuit:
+      enabled: true
+      warning_token_bytes: 450000
+      hard_token_bytes: 900000
+      source_read_warning_bytes: 240000
+      source_read_hard_bytes: 420000
+      log_warning_bytes: 80000
+      log_hard_bytes: 120000
+      tool_output_warning_bytes: 80000
+      tool_output_hard_bytes: 120000
+      test_output_warning_bytes: 120000
+      test_output_hard_bytes: 200000
+      diff_warning_bytes: 120000
+      diff_hard_bytes: 200000
+      handoff_checkpoint_bytes: 20000

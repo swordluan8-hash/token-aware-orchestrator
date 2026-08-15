@@ -1,0 +1,43 @@
+### Python
+*.py[cod]
+*.so
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+### Virtualenv / local tooling
+.venv/
+venv/
+.env
+.env.local
+*.venv
+
+### Local state / installer artifacts
+.v0.4-install-state.json
+.local/
+
+### Release-only local caches and experiment artifacts
+.work-minimal-audit/
+work/
+outputs/
+cache/
+tmp/
+tmp*/
+dist/
+build/
+logs/
+*.log
+*.log.*
+*.jsonl
+*.jsonlog
+benchmark-*.json
+*summary.md
+
+### Local config / secrets
+*.cfg
+*.ini
+config.local.yaml
+config.local.yml
+config.user.yaml
+*state.json
