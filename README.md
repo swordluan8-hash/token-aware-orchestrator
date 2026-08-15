@@ -8,6 +8,9 @@ Token-Aware Orchestrator is an **AI Agent Context Optimization Layer**.
 
 It helps AI coding agents reduce unnecessary context reads so higher-capability models can spend tokens on high-value reasoning.
 
+It does not replace your AI coding agent.
+It helps your existing agent use context more efficiently.
+
 ## Problem
 
 AI coding agents are powerful, but they waste context reading irrelevant information.
@@ -26,6 +29,19 @@ Without context optimization, large amounts of history and unrelated files are r
 - **State Persistence**: keep task context and progress safely persisted.
 - **Quality Verification**: keep tests and validation in the loop.
 
+## Benchmark
+
+Internal benchmark:
+
+- Task success: 5/5
+- Tests passed: 5/5
+- Context reduction: ~75.9%
+- Unexpected changes: 0
+
+Note:
+- Context reduction = measured.
+- Token reduction = estimated.
+
 ## Agent Compatibility
 
 Designed to be agent-agnostic.
@@ -43,14 +59,6 @@ Designed to be agent-agnostic.
 - Other popular AI coding agents
 
 Core architecture is separated from agent adapters.
-
-## Benchmark
-
-- Task success: `5/5`
-- Tests: `5/5`
-- Context reduction: `~75.9%`
-- Unexpected changes: `0`
-- Token data: **estimated**
 
 ## Architecture Diagram
 
@@ -97,4 +105,3 @@ Run the orchestrated workflow with your existing agent runtime as normal for you
 - Not a replacement for the underlying agent; it is a context optimization layer.
 - macOS is the default supported platform.
 - No GUI, no cloud service, no user account system, and no paid model management in this release.
-
