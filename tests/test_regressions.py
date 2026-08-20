@@ -55,6 +55,20 @@ class DiffQualityGateTests(unittest.TestCase):
         self.assertEqual(result["files_changed_count"], 1)
         self.assertNotIn("files", result)
 
+    def test_serena_metadata_is_excluded_from_changed_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / ".git").mkdir()
+            (repo / ".serena").mkdir()
+            (repo / ".serena" / "state.json").write_text("{}\n", encoding="utf-8")
+
+            import subprocess
+
+            subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+            result = orchestrator._run_git_diff(repo)
+
+        self.assertEqual(result["changed_files"], [])
+
 
 class CodexUsageTests(unittest.TestCase):
     def test_excluded_source_does_not_raise_context_pressure(self) -> None:
@@ -73,6 +87,22 @@ class CodexUsageTests(unittest.TestCase):
         self.assertEqual(accounting.tool_output_raw_bytes, 900_008)
         self.assertEqual(accounting.tool_output_truncated_bytes, 900_000)
         self.assertEqual(orchestrator._estimate_context_pressure_bytes(accounting), 12_000 + len("retained"))
+
+    def test_truncate_text_never_exceeds_shared_context_limit(self) -> None:
+        trimmed, was_trimmed, _ = orchestrator._truncate_text("x" * 90_000, 80_000)
+
+        self.assertTrue(was_trimmed)
+        self.assertLessEqual(len(trimmed.encode("utf-8")), 80_000)
+
+    def test_test_output_does_not_consume_executor_output_budget(self) -> None:
+        accounting = orchestrator.TokenAccounting(mode="orchestrated")
+        accounting.add_tool_output("x" * 80_000)
+        accounting.add_test_output("test output", measured_bytes=90_000)
+        circuit = orchestrator._build_context_circuit(orchestrator._load_config(None))
+
+        self.assertFalse(orchestrator._update_context_circuit(circuit, accounting, "tests"))
+        self.assertEqual(accounting.tool_output_bytes, 80_000)
+        self.assertEqual(accounting.test_output_bytes, len("test output"))
 
     def test_parse_codex_jsonl_usage(self) -> None:
         raw = "\n".join(
