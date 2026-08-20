@@ -49,12 +49,13 @@ def _truncate_text(raw: str, max_bytes: int, marker: str = "[context-circuit-tri
 
 
 def _estimate_context_pressure_bytes(accounting: TokenAccounting) -> int:
+    # Excluded source remains useful accounting evidence, but it is absent from
+    # the prompt and must not increase the active context-pressure signal.
     return (
         accounting.codex_context_after_bytes
         + accounting.log_raw_bytes
         + accounting.tool_output_bytes
         + accounting.git_diff_bytes
-        + accounting.source_truncated_bytes
         + accounting.log_truncated_bytes
         + accounting.tool_output_truncated_bytes
     )
@@ -71,7 +72,7 @@ def _circuit_checkpoint_text(state: ContextCircuitState, accounting: TokenAccoun
         f"trip_value={state.trip_value}\\n"
         f"trip_threshold={state.trip_threshold}\\n"
         f"risk_events={len(state.risk_signals)}\\n"
-        f"hand_off_version=1.0.0-dev"
+        f"hand_off_version=1.0.1"
     )
 
 
@@ -1547,7 +1548,7 @@ def orchestrate(
         }
 
         handoff = {
-            "version": "1.0.0-dev",
+            "version": "1.0.1",
             "task_id": hashlib.sha1((task.raw + str(start_all)).encode("utf-8", errors="ignore")).hexdigest()[:16],
             "route": final_route,
             "routing": final_route,

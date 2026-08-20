@@ -16,6 +16,7 @@ sys.path.insert(0, str(SCRIPTS))
 import detect_resources  # noqa: E402
 import orchestrator  # noqa: E402
 import orchestratorctl  # noqa: E402
+import benchmark  # noqa: E402
 
 
 class ResourceDetectionTests(unittest.TestCase):
@@ -56,6 +57,13 @@ class DiffQualityGateTests(unittest.TestCase):
 
 
 class CodexUsageTests(unittest.TestCase):
+    def test_excluded_source_does_not_raise_context_pressure(self) -> None:
+        accounting = orchestrator.TokenAccounting(mode="orchestrated")
+        accounting.codex_context_after_bytes = 12_000
+        accounting.source_truncated_bytes = 900_000
+
+        self.assertEqual(orchestrator._estimate_context_pressure_bytes(accounting), 12_000)
+
     def test_parse_codex_jsonl_usage(self) -> None:
         raw = "\n".join(
             [
@@ -217,6 +225,39 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(payload["handoff"]["accounting"]["codex_direct_calls"], 0)
         self.assertEqual(payload["handoff"]["final"]["status"], "review_required")
         self.assertFalse(payload["handoff"]["final"]["task_success"])
+
+
+class BenchmarkSummaryTests(unittest.TestCase):
+    def test_summary_reports_actual_input_output_and_total(self) -> None:
+        rows = [
+            {
+                "mode": "baseline",
+                "task_id": "task_a",
+                "task_success": True,
+                "test_pass": True,
+                "escalation_count": 0,
+                "unexpected_files_changed": 0,
+                "local_worker_calls": 0,
+                "codex_direct_calls": 1,
+                "candidate_context_bytes": 100,
+                "actual_codex_context_bytes": 100,
+                "execution_time_ms": 1,
+                "estimated_input_tokens": 25,
+                "estimated_output_tokens": 25,
+                "actual_input_tokens": 120,
+                "actual_output_tokens": 8,
+                "retry_count": 0,
+                "token_count_mode": "ACTUAL",
+                "raw_log_bytes": 0,
+                "retained_log_bytes": 0,
+            }
+        ]
+
+        result = benchmark.summarize(rows)["runs_by_mode"]["baseline"]
+
+        self.assertEqual(result["actual_input_tokens_total"], 120)
+        self.assertEqual(result["actual_output_tokens_total"], 8)
+        self.assertEqual(result["actual_total_tokens"], 128)
 
 
 class InstallerTests(unittest.TestCase):

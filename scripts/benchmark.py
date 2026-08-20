@@ -747,6 +747,8 @@ def run_one(
             "task_success": task_success,
             "test_pass": test_pass,
             "test_status": test.get("status", "unknown"),
+            "execution_success": bool(execution.get("success", False)),
+            "execution_detail": execution.get("detail", ""),
             "requires_codex_review": bool(final.get("requires_codex_review", True)),
             "interrupted": bool(final.get("interrupt", False)),
             "candidate_context_bytes": candidate_context_bytes,
@@ -785,6 +787,7 @@ def run_one(
             "context_circuit_trip": bool(context_circuit.get("tripped")),
             "context_circuit_trip_stage": context_circuit.get("trip_stage"),
             "context_circuit_trip_reason": context_circuit.get("trip_reason"),
+            "context_circuit_trip_metric": context_circuit.get("trip_metric"),
             "execution_exit_code": _safe_int(execution.get("exit_code", -1)),
             "test_exit_code": _safe_int(test.get("exit_code", -1)),
             "candidate_context_before_bytes": context_before,
@@ -816,7 +819,9 @@ def summarize(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         estimated_input_total = sum(_safe_int(r["estimated_input_tokens"]) for r in mode_rows)
         estimated_output_total = sum(_safe_int(r["estimated_output_tokens"]) for r in mode_rows)
         actual_input_rows = [r for r in mode_rows if isinstance(r.get("actual_input_tokens"), int)]
+        actual_output_rows = [r for r in mode_rows if isinstance(r.get("actual_output_tokens"), int)]
         actual_input_total = sum(_safe_int(r["actual_input_tokens"]) for r in actual_input_rows)
+        actual_output_total = sum(_safe_int(r["actual_output_tokens"]) for r in actual_output_rows)
         retry_count = sum(_safe_int(r["retry_count"]) for r in mode_rows)
 
         execution_calls = local_calls + codex_calls
@@ -835,6 +840,12 @@ def summarize(records: List[Dict[str, Any]]) -> Dict[str, Any]:
             "estimated_context_tokens_before_total": estimated_input_total,
             "estimated_context_tokens_after_total": estimated_output_total,
             "actual_input_tokens_total": actual_input_total if len(actual_input_rows) == n else None,
+            "actual_output_tokens_total": actual_output_total if len(actual_output_rows) == n else None,
+            "actual_total_tokens": (
+                actual_input_total + actual_output_total
+                if len(actual_input_rows) == n and len(actual_output_rows) == n
+                else None
+            ),
             "escalation_rate": escalations / n if n else 0.0,
             "unexpected_change_rate": unexpected_changes / n if n else 0.0,
             "local_execution_ratio": local_ratio,
@@ -875,12 +886,12 @@ def write_summary_md(summary: Dict[str, Any], rows: List[Dict[str, Any]], path: 
         by_task.setdefault(row["task_id"], {})[row["mode"]] = row
 
     lines = [
-        "# v0.3 Baseline vs Orchestrated Benchmark",
+        "# V1 Baseline vs Orchestrated Benchmark",
         "",
         f"modes={', '.join(modes)}",
         f"task_count={summary.get('task_count', 0)}",
         f"record_count={summary.get('total_runs', 0)}",
-        "token_count_mode=ESTIMATED",
+        f"token_count_mode={','.join(summary.get('token_count_coverage', [])) or 'UNKNOWN'}",
         "",
         "## 任务级对照（Baseline vs Orchestrated）",
         "",
@@ -954,6 +965,10 @@ def write_summary_md(summary: Dict[str, Any], rows: List[Dict[str, Any]], path: 
                 f"Orchestrated total context bytes: {orchestrated_stats.get('context_after_bytes_total', 0):.0f}",
                 f"context_reduction%(baseline->orchestrated): {_format_pct(1 - (orchestrated_stats.get('context_after_bytes_total', 0) / baseline_context_after))}",
                 f"estimated_token_reduction%(baseline->orchestrated): {_format_pct(1 - (orchestrated_stats.get('estimated_context_tokens_after_total', 0) / baseline_token_after))}",
+                f"Baseline actual input tokens: {baseline_stats.get('actual_input_tokens_total')}",
+                f"Orchestrated actual input tokens: {orchestrated_stats.get('actual_input_tokens_total')}",
+                f"Baseline actual total tokens: {baseline_stats.get('actual_total_tokens')}",
+                f"Orchestrated actual total tokens: {orchestrated_stats.get('actual_total_tokens')}",
                 f"avg execution_time_delta_ms: {(orchestrated_stats.get('avg_execution_time_ms', 0.0) - baseline_stats.get('avg_execution_time_ms', 0.0)):.3f}",
             ]
         )

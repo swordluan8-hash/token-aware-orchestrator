@@ -1,4 +1,4 @@
-# Release Checklist (V1.0.0)
+# Release Checklist (V1.0.1)
 
 - [ ] `python3 -m py_compile scripts/*.py` passes.
 - [ ] `python3 -m unittest discover -s tests -v` passes.
