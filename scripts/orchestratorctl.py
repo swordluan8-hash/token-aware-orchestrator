@@ -16,14 +16,16 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_TITLE = "token-aware-orchestrator"
-VERSION = "0.4.0-mvp"
-STATE_FILE = ROOT / ".v0.4-install-state.json"
+VERSION = "1.0.0-dev"
+STATE_FILE = ROOT / ".toa-install-state.json"
 
 DEFAULT_INSTALL_BIN_NAME = PROJECT_TITLE
 DEFAULT_INSTALL_BIN_DIR = Path.home() / ".local" / "bin"
 DEFAULT_CONFIG_DIR = Path.home() / ".config" / PROJECT_TITLE
 DEFAULT_CONFIG_NAME = "config.yaml"
 INSTALL_TEMPLATE = ROOT / "config.default.yaml"
+SKILL_SOURCE = ROOT / "docs" / "SKILL.md"
+DEFAULT_SKILL_DIR = Path.home() / ".codex" / "skills" / PROJECT_TITLE
 
 LOCAL_RESULTS_CANDIDATES = (
     "outputs/benchmark-run3-results.json",
@@ -136,8 +138,7 @@ def _detect_codex_skill_dir() -> Tuple[Optional[Path], bool]:
         if not candidate:
             continue
         has_skill = (candidate / "SKILL.md").exists()
-        has_runtime = (candidate / "scripts" / "orchestrator.py").exists()
-        if has_skill and has_runtime:
+        if has_skill:
             return candidate, True
     for candidate in candidates:
         if not candidate:
@@ -179,6 +180,7 @@ def _config_feature_snapshot(path: Optional[Path]) -> Dict[str, Any]:
         "context_guard_enabled": "context_circuit:" in text and "enabled: true" in text,
         "thread_guard": "thread_budget" in (_safe_file_text(ROOT / "scripts/benchmark.py").lower() if (ROOT / "scripts/benchmark.py").exists() else ""),
         "aider_declared": "aider:" in text,
+        "codex_declared": "codex:" in text,
         "local_worker_declared": "local_worker:" in text,
         "local_model": re.search(r"model:\s*.+", text) is not None,
     }
@@ -365,7 +367,7 @@ def _extract_summary(payload: Dict[str, Any]) -> Dict[str, Any]:
             "estimated_context_tokens_after_total": token_out,
             "unexpected_change_rate": unexpected / n if n else 0.0,
             "local_execution_ratio": local_calls / calls if calls else 0.0,
-            "codex_execution_ratio": codex_calls / calls if calls else 1.0,
+            "codex_execution_ratio": codex_calls / calls if calls else 0.0,
             "avg_execution_time_ms": exec_ms / n if n else 0.0,
             "escalation_rate": escalations / n if n else 0.0,
             "token_count_modes": sorted({str(r.get("token_count_mode", "")) for r in rows if r.get("token_count_mode")}),
@@ -437,6 +439,7 @@ def command_install(args: argparse.Namespace) -> int:
     config_dir = Path(args.config_dir).expanduser()
     config_path = (config_dir / DEFAULT_CONFIG_NAME).resolve()
     config_template = INSTALL_TEMPLATE
+    skill_dir = Path(args.skill_dir).expanduser()
 
     if not config_template.exists():
         checks.append(CheckItem("config.template", "fail", "template not found", True))
@@ -461,6 +464,15 @@ def command_install(args: argparse.Namespace) -> int:
     shim_path.chmod(0o755)
     checks.append(CheckItem("bin.install", "pass", f"wrote={shim_path}"))
 
+    if not SKILL_SOURCE.exists():
+        checks.append(CheckItem("skill.install", "fail", f"source missing={SKILL_SOURCE}", True))
+    else:
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(SKILL_SOURCE, skill_dir / "SKILL.md")
+        checks.append(CheckItem("skill.install", "pass", f"wrote={skill_dir / 'SKILL.md'}"))
+        codex_dir = skill_dir
+        codex_confirmed = (skill_dir / "SKILL.md").exists()
+
     profile = _shell_profile()
     profile_label = str(profile) if profile else "auto-detect-failed"
     shell = _shell_name() or "unknown"
@@ -481,7 +493,7 @@ def command_install(args: argparse.Namespace) -> int:
         "installed_at": _utc_now(),
         "version": VERSION,
         "project_root": str(root),
-        "project_skill_dir": str(codex_dir) if codex_dir else str(root),
+        "project_skill_dir": str(codex_dir) if codex_dir else str(skill_dir),
         "profile": profile_label,
         "shell": shell,
         "bin": str(shim_path),
@@ -513,14 +525,14 @@ def command_install(args: argparse.Namespace) -> int:
     print()
     print("READY:")
     print(f"  {_to_status_icon('pass' if bool(codex_dir) else 'warn')} Codex detected ({codex_dir or 'not detected'})")
-    print(f"  {_to_status_icon('pass')} Skill installed ({shim_path})")
+    print(f"  {_to_status_icon('pass' if codex_confirmed else 'warn')} Codex Skill installed ({skill_dir})")
     print(f"  {_to_status_icon('pass' if optional_checks[1].status == 'pass' else 'warn')} Context Guard enabled")
     print(f"  {_to_status_icon('pass' if _config_feature_snapshot(config_path).get('thread_guard') else 'warn')} Thread Guard enabled")
 
     print()
     print("OPTIONAL:")
     print(f"  {_to_status_icon(optional_checks[0].status)} Local Worker available ({args.model})")
-    print(f"  {_to_status_icon(optional_checks[0].status)} fallback to Codex Direct ({'none' if local_available else 'enabled'})")
+    print(f"  {_to_status_icon('pass' if shutil.which('codex') else 'warn')} Codex CLI ({shutil.which('codex') or 'not found'})")
 
     if not in_path:
         print()
@@ -539,7 +551,8 @@ def command_status(args: argparse.Namespace) -> int:
     config_snapshot = _config_feature_snapshot(config_path)
 
     system_checks = [
-        CheckItem("Codex", "pass" if codex_dir else "warn", f"path={codex_dir or 'not detected'}", False),
+        CheckItem("Codex Skill", "pass" if codex_dir else "warn", f"path={codex_dir or 'not detected'}", False),
+        CheckItem("Codex CLI", "pass" if shutil.which("codex") else "warn", f"binary={shutil.which('codex') or 'not found'}", False),
         CheckItem("Skill", "pass" if root.exists() else "fail", f"path={root}", True),
         CheckItem("Config", "pass" if config_snapshot["present"] else "warn", f"path={config_path}", False),
     ]
@@ -598,9 +611,6 @@ def command_status(args: argparse.Namespace) -> int:
     print("Optional:")
     for item in optional_checks:
         print(f"  {_to_status_icon(item.status)} {item.name}: {item.detail}")
-
-    if optional_checks[-1].status == "warn":
-        print("  fallback: Codex Direct")
 
     return 1 if status == "ERROR" else 0
 
@@ -794,7 +804,7 @@ def command_report(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=PROJECT_TITLE,
-        description="Token-aware Orchestrator CLI (v0.4 MVP): install / status / report",
+        description="Token-aware Orchestrator CLI: install / status / report",
     )
     parser.add_argument("--version", action="version", version=f"{PROJECT_TITLE} {VERSION}")
 
@@ -804,6 +814,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_install.add_argument("--bin-dir", default=str(DEFAULT_INSTALL_BIN_DIR), help="target bin directory")
     p_install.add_argument("--bin-name", default=DEFAULT_INSTALL_BIN_NAME, help="binary name")
     p_install.add_argument("--config-dir", default=str(DEFAULT_CONFIG_DIR), help="config directory")
+    p_install.add_argument("--skill-dir", default=str(DEFAULT_SKILL_DIR), help="Codex skill directory")
     p_install.add_argument("--host", default="http://127.0.0.1:11434", help="local model host")
     p_install.add_argument("--model", default="qwen2.5-coder:7b", help="local model name")
     p_install.add_argument("--force", action="store_true", help="overwrite existing config")

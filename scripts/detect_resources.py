@@ -109,7 +109,7 @@ def detect_ollama(host: str, model: str) -> Dict[str, Any]:
             pass
 
     return {
-        "binary": binary if os.path.exists(binary) else None,
+        "binary": binary if binary and os.path.exists(binary) else None,
         "host": host,
         "version": version,
         "reachable": reachable,

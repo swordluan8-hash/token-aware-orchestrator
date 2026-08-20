@@ -5,13 +5,13 @@ routing:
   local_retry_wait_seconds: 0
 
 local_worker:
-  provider: mock
+  provider: optional
   model: qwen2.5-coder:7b
   base_url: http://127.0.0.1:11434
   num_ctx: 1024
   timeout_seconds: 8
   mock:
-    available: true
+    available: false
     fail_on_attempts: 0
     error: ""
 
@@ -26,6 +26,14 @@ executors:
     extra_args: []
     command_timeout_seconds: 120
     mode: real
+
+  codex:
+    binary: codex
+    # Leave blank to use Codex's configured default, or set e.g. gpt-5.6-terra.
+    model: ""
+    extra_args: []
+    command_timeout_seconds: 600
+    sandbox: workspace-write
 
 context:
   max_candidate_bytes: 200000

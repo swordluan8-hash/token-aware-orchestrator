@@ -1,84 +1,32 @@
-# Alpha Test Guide
+# V1 Alpha Test Guide
 
-适用于第一批外部测试者的最小验证流程。  
-目标：验证安装、可用性、任务执行稳定性和效率报告可读性。
+目标：验证真实 Codex 路径、usage 记录和质量门，而不是验证脚本化演示。
 
-## 测试者清单
+## 测试前提
 
-1. 安装者（测试者本人）
-2. 所测设备（macOS 环境）
-3. 用于真实任务验证的仓库
+- macOS 或 Linux。
+- 已登录并可运行 `codex exec --json`。
+- 一个可恢复的 Git 测试仓库。
 
-## 测试步骤
+## 步骤
 
-### 1) 安装
+1. 在 TOA 根目录运行 `python3 scripts/orchestratorctl.py install`，然后运行 `token-aware-orchestrator status`。
+2. 确认 `Codex CLI` 和 `Codex Skill` 是 PASS。
+3. 选一个可验证的真实 bug fix，填写 `task_type`、`target_model`、`max_budget`、`success_criteria`、`expected_files`。
+4. 用 `--output outputs/run.json` 执行。
+5. 记录 `handoff.execution`、`handoff.test`、`handoff.diff` 和 `handoff.accounting`。
 
-```bash
-cd /path/to/token-aware-orchestrator-v0-3-1
-python3 scripts/orchestratorctl.py install
-```
+## 通过标准
 
-要求截图/记录：
+- `handoff.final.task_success` 为 `true`。
+- 自动测试通过，或测试状态和原因明确。
+- `unexpected_files` 为空，或变更经过人工确认。
+- `real_input_tokens`、`real_output_tokens` 为非负整数。
 
-- `READY` 与 `OPTIONAL` 区块
-- 输出中的 `skill_root`、`profile`
+## 反馈格式
 
-### 2) 运行 status
-
-```bash
-token-aware-orchestrator status
-```
-
-要求截图/记录：
-
-- `System Status`
-- `System` / `Core` / `Optional` 状态
-- 若有 WARN，记录对应项与原因
-
-### 3) 使用真实 Codex 任务
-
-任选一个真实任务（非演示任务）：
-
-- 典型类型：文件修改、日志定位、重构补丁
-- 记录：
-  - 任务类型（bug fix / refactor / locate）
-  - 是否遇到 fallback
-  - 任务结果主观可接受性（成功/失败）
-
-### 4) 运行 report
-
-```bash
-token-aware-orchestrator report
-```
-
-要求截图/记录：
-
-- `AI Efficiency Report`
-- `Context` 区域
-- `Quality` 区域
-- `Execution` 区域（特别是 Local Worker/Fallback）
-
-### 5) 反馈
-
-请按以下格式提交：
-
-- 系统  
-  - macOS 版本  
-  - shell（zsh/bash）  
-  - 是否开启 Ollama  
-- 任务类型  
-  - 任务描述  
-  - 结果（成功/失败）  
-- Context变化  
-  - Before / After / Reduction  
-- 是否遇到问题  
-  - 命令输出  
-  - 你认为的根因  
-  - 建议修复点  
-
-## 通过标准（建议）
-
-- install / status 都可正常运行  
-- 不出现 ERROR（允许少量 WARN）  
-- 真实任务可完成且可理解报告输出  
-- report 能返回 Task、Context、Quality、Execution 的完整区块
+- 操作系统和 Codex CLI 版本。
+- 任务 payload（移除敏感信息）。
+- 输出 JSON 中的 `handoff`。
+- 是否完成、测试结果、意外修改文件、reported usage。
+- 复现步骤与终端错误输出。

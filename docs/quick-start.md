@@ -1,77 +1,62 @@
-# Quick Start（5 分钟）
+# Quick Start（V1）
 
-目标：5 分钟内完成安装、健康检查、运行一次任务、产出一份报表。
+目标：安装、确认 Codex CLI、运行一次有真实 usage 记录的任务。
 
-## 1. Install
+## 1. 安装
 
 ```bash
-cd /path/to/token-aware-orchestrator-v0-3-1
+git clone https://github.com/swordluan8-hash/token-aware-orchestrator.git
+cd token-aware-orchestrator
 python3 scripts/orchestratorctl.py install
-```
-
-输出应包含：
-
-- `READY:`
-  - Codex detected
-  - Skill installed
-- `OPTIONAL:`
-  - Local Worker availability（不可用会提示 fallback）
-- PATH 建议（如未检测到）
-
-## 2. Status
-
-```bash
+export PATH="$HOME/.local/bin:$PATH"
 token-aware-orchestrator status
 ```
 
-查看三部分：
+`status` 的 `Codex CLI` 和 `Codex Skill` 都应为 PASS。Ollama/Aider 是可选项，WARN 不阻止 Codex 路径运行。
 
-- System：Codex / Skill / Config  
-- Core：Localization / Context Guard / Thread Guard / State  
-- Optional：Ollama / Aider / Local model  
+## 2. 定义一个有边界的任务
 
-结尾会看到：
-
-- `System Status: READY / WARNING / ERROR`
-
-## 3. Run task（示例）
+在任务开始前明确模型、预算、成功条件和预期修改文件。
 
 ```bash
-cd /path/to/your/repo
-python3 /path/to/token-aware-orchestrator-v0-3-1/scripts/orchestrate \
-  --mode orchestrated \
-  --task '{"task":"Replace constant with config value in one file"}' \
+cd /path/to/your/repository
+python3 /path/to/token-aware-orchestrator/scripts/orchestrator.py \
+  --task '{
+    "task":"Fix the input validation bug and add a regression test.",
+    "task_type":"bug_fix",
+    "target_model":"gpt-5.6-terra",
+    "max_budget":25000,
+    "priority":"high",
+    "success_criteria":["Tests pass","No unrelated files change"],
+    "expected_files":["src/validator.py","tests/test_validator.py"]
+  }' \
   --repo . \
-  --executor command \
-  --command "echo noop"
+  --mode orchestrated \
+  --output outputs/run-001.json
 ```
 
-> 实际 `--task` 结构可使用你当前环境里的执行方式。  
-> 以上只演示 CLI 可用性，不替代你的真实工作流参数。
+模型选择：明确、机械的小改动用 Luna；普通 bug fix / 多文件实现用 Terra；架构和最终审计才用 Sol。
 
-## 4. Report
+## 3. 检查结果
 
 ```bash
-token-aware-orchestrator report
+python3 - <<'PY'
+import json
+h = json.load(open('outputs/run-001.json'))['handoff']
+print('final:', h['final'])
+print('test:', h['test'])
+print('diff:', h['diff'])
+print('usage:', h['accounting'])
+PY
 ```
 
-会显示：
+只有 `real_input_tokens` 和 `real_output_tokens` 是整数时，才可把该次运行用于 token 统计。
 
-- 任务数  
-- Context Before / After / Reduction  
-- Success / Tests / Unexpected changes  
-- Local Worker 使用状态与 fallback 情况  
-
-如需保存：
+## 4. 真实对照实验
 
 ```bash
-token-aware-orchestrator report --output outputs/report.md
+python3 scripts/benchmark.py --runner codex --mode both --output-prefix codex-real
+python3 scripts/orchestratorctl.py report --results outputs/codex-real-results.json
 ```
 
-## 5. 如果看到警告
-
-- 先执行 `token-aware-orchestrator status --json` 拿完整日志  
-- 重点关注：
-  - PATH 是否包含 `~/.local/bin`
-  - Ollama 是否运行（如启用本地模型）
-  - Codex 是否能检测到 skill 目录
+`--runner scripted` 仅用于回归 smoke test，不代表 AI 任务成功或 token 节省。
