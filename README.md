@@ -2,7 +2,7 @@
 
 Make Codex read less, not think less.
 
-`1.0.0-dev`
+`1.0.1`
 
 Token-Aware Orchestrator (TOA) is a small, local control layer for OpenAI Codex CLI. It narrows the initial repository scope, applies a task token guardrail, runs Codex, and writes a JSON handoff containing test, diff, and usage evidence.
 

@@ -16,7 +16,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT_TITLE = "token-aware-orchestrator"
-VERSION = "1.0.0-dev"
+VERSION = "1.0.1"
 STATE_FILE = ROOT / ".toa-install-state.json"
 
 DEFAULT_INSTALL_BIN_NAME = PROJECT_TITLE
