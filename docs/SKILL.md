@@ -13,7 +13,7 @@ Use this skill when a coding task needs a bounded repository scope, a token budg
 2. State the success criteria and an input/output token ceiling before execution.
 3. Run `scripts/orchestrator.py` with `executor: "codex"`, `target_model`, `max_budget`, and `--output`.
 4. Treat `turn.completed.usage` values in the output JSON as the token evidence. Do not present byte estimates or scripted-fixture results as real token savings.
-5. Check `handoff.final.task_success`, the detected test result, `handoff.diff.unexpected_files`, and the reported token usage before calling a task complete.
+5. Check `handoff.final.task_success`, `handoff.final.status`, the detected test result, `handoff.diff.unexpected_files`, and the reported token usage before calling a task complete. Treat `review_required` as unresolved validation, not as success.
 
 ## Task payload
 
@@ -29,7 +29,7 @@ Use this skill when a coding task needs a bounded repository scope, a token budg
 }
 ```
 
-`max_budget` is a guardrail for the task. The preflight rejects an obviously oversized prompt; after execution, compare the recorded reported total against the limit.
+`max_budget` is a guardrail for the task. The preflight narrows the initial context estimate; after each reported completed turn, the executor compares the cumulative input-plus-output total against the limit and stops before another turn when it is exceeded. The reported usage already spent remains in the handoff.
 
 ## Command
 

@@ -153,6 +153,10 @@ class TokenAccounting:
     real_cached_tokens: Optional[int] = None
     real_reasoning_output_tokens: Optional[int] = None
 
+    budget_limit_tokens: Optional[int] = None
+    budget_preflight_context_bytes: int = 0
+    budget_exceeded: bool = False
+
     estimated_tokens: int = 0
     token_source: str = "estimated"
 
@@ -639,6 +643,12 @@ def _parse_codex_jsonl(raw: str) -> Dict[str, Optional[int]]:
     return totals
 
 
+def _reported_usage_total(usage: Dict[str, Optional[int]]) -> Optional[int]:
+    if usage.get("input") is None or usage.get("output") is None:
+        return None
+    return int(usage["input"] or 0) + int(usage["output"] or 0)
+
+
 class CodexExecutor(_BaseExecutor):
     """Run the real Codex CLI and retain its authoritative usage events."""
 
@@ -668,6 +678,7 @@ class CodexExecutor(_BaseExecutor):
                 + "\nInspect these first. Do not modify files outside the task unless necessary."
             )
         prompt = task.task_text + scope_note
+        accounting.budget_limit_tokens = task.max_budget
         estimated_prompt_tokens = _estimate_tokens(len(prompt.encode("utf-8", errors="ignore")))
         if task.max_budget is not None and estimated_prompt_tokens > task.max_budget:
             return ExecutionSummary(
@@ -688,8 +699,32 @@ class CodexExecutor(_BaseExecutor):
         cmd.append(prompt)
 
         start = time.perf_counter()
+        stdout_lines: List[str] = []
+        stderr_text = ""
+        budget_exceeded = False
         try:
-            cp = subprocess.run(cmd, cwd=str(repo), text=True, capture_output=True, timeout=timeout)
+            process = subprocess.Popen(
+                cmd,
+                cwd=str(repo),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=1,
+            )
+            assert process.stdout is not None
+            for line in process.stdout:
+                stdout_lines.append(line)
+                usage_now = _parse_codex_jsonl("".join(stdout_lines))
+                total_now = _reported_usage_total(usage_now)
+                if task.max_budget is not None and total_now is not None and total_now > task.max_budget:
+                    budget_exceeded = True
+                    accounting.budget_exceeded = True
+                    process.terminate()
+                    break
+            remaining_stdout, stderr_text = process.communicate(timeout=timeout)
+            if remaining_stdout:
+                stdout_lines.append(remaining_stdout)
+            cp = subprocess.CompletedProcess(cmd, process.returncode, "".join(stdout_lines), stderr_text or "")
         except FileNotFoundError:
             return ExecutionSummary(False, "codex", attempt, None, "codex_not_found", f"binary not found: {binary}", 0.0)
         except subprocess.TimeoutExpired as exc:
@@ -708,12 +743,15 @@ class CodexExecutor(_BaseExecutor):
         accounting.real_output_tokens = usage["output"]
         accounting.real_cached_tokens = usage["cache"]
         accounting.real_reasoning_output_tokens = usage["reasoning_output"]
+        actual_total = _reported_usage_total(usage)
         budget_detail = ""
-        if task.max_budget is not None and usage["input"] is not None and usage["output"] is not None:
-            actual_total = usage["input"] + usage["output"]
+        if task.max_budget is not None and actual_total is not None:
             budget_detail = f"; reported_total={actual_total}; max_budget={task.max_budget}"
-        detail = f"returncode={cp.returncode}; usage={'actual' if usage['input'] is not None else 'unavailable'}{budget_detail}"
-        return ExecutionSummary(cp.returncode == 0, "codex", attempt, cp.returncode, detail, trimmed[:12000], elapsed)
+        if budget_exceeded:
+            detail = f"budget_exceeded; returncode={cp.returncode}; usage=actual{budget_detail}"
+        else:
+            detail = f"returncode={cp.returncode}; usage={'actual' if usage['input'] is not None else 'unavailable'}{budget_detail}"
+        return ExecutionSummary((cp.returncode == 0) and not budget_exceeded, "codex", attempt, cp.returncode, detail, trimmed[:12000], elapsed)
 
 
 def _parse_aider_tokens(raw: str) -> Dict[str, Optional[int]]:
@@ -1079,10 +1117,17 @@ def _build_context(
         selected_prompt = base.prompt
     else:
         selected = _select_files_for_orchestrated(repo, task, config)
+        after_limit = int(config["context"].get("max_after_bytes", 80_000))
+        if task.max_budget is not None:
+            task_bytes = len(task.task_text.encode("utf-8", errors="ignore"))
+            budget_bytes = max(0, (task.max_budget * 4) - task_bytes - 512)
+            after_limit = min(after_limit, budget_bytes)
+            accounting.budget_limit_tokens = task.max_budget
+            accounting.budget_preflight_context_bytes = after_limit
         sel = _collect_context(
             repo,
             selected,
-            int(config["context"].get("max_after_bytes", 80_000)),
+            after_limit,
             accounting=accounting,
             circuit=circuit,
         )
@@ -1428,14 +1473,20 @@ def orchestrate(
         if expected_files:
             unexpected_files = [item for item in changed_files if item not in expected_files]
 
-        handoff_risk = bool(context_circuit.tripped) or test_section.get("status") == "unknown"
+        no_test_command = test_section.get("status") == "unknown" and test_section.get("reason") == "test_command_not_found"
+        handoff_risk = bool(context_circuit.tripped)
         final_task_success = (
             execution_obj.success
             and test_section.get("status") == "passed"
             and not unexpected_files
             and not handoff_risk
         )
-        final_status = "interrupted" if context_circuit.tripped else ("success" if final_task_success else "failed")
+        if context_circuit.tripped:
+            final_status = "interrupted"
+        elif no_test_command and execution_obj.success and not unexpected_files:
+            final_status = "review_required"
+        else:
+            final_status = "success" if final_task_success else "failed"
 
         requires_codex_review = (
             context_circuit.tripped
@@ -1482,6 +1533,9 @@ def orchestrate(
             "real_output_tokens": handoff_accounting.get("real_output_tokens"),
             "real_cached_tokens": handoff_accounting.get("real_cached_tokens"),
             "real_reasoning_output_tokens": handoff_accounting.get("real_reasoning_output_tokens"),
+            "budget_limit_tokens": handoff_accounting.get("budget_limit_tokens"),
+            "budget_preflight_context_bytes": handoff_accounting.get("budget_preflight_context_bytes"),
+            "budget_exceeded": handoff_accounting.get("budget_exceeded"),
         }
 
         handoff = {
@@ -1525,7 +1579,7 @@ def orchestrate(
                 "requires_codex_review": bool(requires_codex_review),
                 "wall_clock_ms": (time.perf_counter() - start_all) * 1000.0,
                 "interrupt": bool(context_circuit.tripped),
-                "next_step": "continue_from_handoff_if_needed",
+                "next_step": "run_tests_or_review" if final_status == "review_required" else "continue_from_handoff_if_needed",
             },
             "task": {
                 "executor": task.executor,
@@ -1757,7 +1811,7 @@ def main(argv=None) -> int:
         _print_json({"kind": "handoff", "payload": payload["handoff"]})
 
     final_status = payload["handoff"].get("final", {}).get("status")
-    return 0 if final_status == "success" else 1
+    return 0 if final_status in {"success", "review_required"} else 1
 
 
 if __name__ == "__main__":

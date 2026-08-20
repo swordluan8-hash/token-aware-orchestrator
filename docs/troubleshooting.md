@@ -26,7 +26,11 @@ codex exec --json "Reply only: ready"
 
 ## 任务被 `budget_preflight_blocked` 阻止
 
-任务 prompt 或初始范围的估算已超过 `max_budget`。缩小任务范围、拆分任务，或明确提高预算后重试。预算不是账单结算；完成后仍要检查实际 usage。
+任务 prompt 或初始范围的估算已超过 `max_budget`，或者 Codex 已报告累计 usage 超限。缩小任务范围、拆分任务，或明确提高预算后重试。超限前已经产生的 usage 不会被撤销；检查 `handoff.accounting.budget_exceeded` 和实际 token 字段。
+
+## `final.status: review_required`
+
+Codex 执行本身成功，但仓库没有可自动检测的测试命令。补充项目测试命令或人工检查 `diff` 后，才能把任务视为完成。
 
 ## Local Worker / Ollama 显示 WARN
 

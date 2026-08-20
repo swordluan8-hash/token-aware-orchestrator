@@ -109,6 +109,31 @@ class CodexUsageTests(unittest.TestCase):
         self.assertFalse(result.success)
         self.assertEqual(result.detail, "budget_preflight_blocked")
 
+    def test_codex_executor_stops_after_reported_budget_is_exceeded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            fake_codex = root / "fake-codex"
+            fake_codex.write_text(
+                "#!/usr/bin/env python3\n"
+                "print('{\\\"type\\\":\\\"turn.completed\\\",\\\"usage\\\":{\\\"input_tokens\\\":21,\\\"output_tokens\\\":8}}')\n",
+                encoding="utf-8",
+            )
+            fake_codex.chmod(0o755)
+            config = orchestrator._load_config(None)
+            config["executors"]["codex"]["binary"] = str(fake_codex)
+            task = orchestrator.TaskInput(
+                raw="inspect",
+                payload={"task": "inspect", "executor": "codex", "max_budget": 20},
+            )
+            accounting = orchestrator.TokenAccounting(mode="orchestrated")
+            result = orchestrator.CodexExecutor().run(task, root, config, [], 1, accounting)
+
+        self.assertFalse(result.success)
+        self.assertIn("budget_exceeded", result.detail)
+        self.assertTrue(accounting.budget_exceeded)
+        self.assertEqual(accounting.real_input_tokens, 21)
+        self.assertEqual(accounting.real_output_tokens, 8)
+
     def test_structured_task_fields_are_normalized(self) -> None:
         task = orchestrator.TaskInput(
             raw="x",
@@ -143,10 +168,12 @@ class PersistenceTests(unittest.TestCase):
                 result = orchestrator.main(["--task", task, "--repo", str(repo), "--output", str(output)])
             payload = json.loads(output.read_text(encoding="utf-8"))
 
-        self.assertEqual(result, 1)  # no test command exists, so quality gate correctly fails
+        self.assertEqual(result, 0)  # no test command requires review, but is not an execution error
         self.assertIn("routing", payload)
         self.assertIn("handoff", payload)
         self.assertEqual(payload["handoff"]["accounting"]["codex_direct_calls"], 0)
+        self.assertEqual(payload["handoff"]["final"]["status"], "review_required")
+        self.assertFalse(payload["handoff"]["final"]["task_success"])
 
 
 class InstallerTests(unittest.TestCase):

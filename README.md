@@ -77,6 +77,10 @@ PY
 
 The authoritative usage values are `real_input_tokens`, `real_output_tokens`, `real_cached_tokens`, and `real_reasoning_output_tokens`. If they are `null`, the run did not provide usage data and must not be used as token evidence.
 
+`max_budget` now limits the initial context estimate and is checked again against reported Codex usage. If a completed turn reports usage above the limit, the executor stops before requesting another turn and records `budget_exceeded: true`. A budget is a control guardrail, not a guarantee that billed usage can be retroactively undone.
+
+If no test command can be detected, a successful execution is reported as `final.status: "review_required"` rather than being mislabeled as a task failure. The task still needs human or project-specific validation.
+
 ## Benchmarking honestly
 
 Scripted smoke test only:
