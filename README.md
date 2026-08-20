@@ -1,107 +1,126 @@
 # Token-Aware Orchestrator
 
-Make AI agents read less, not think less.
+Make Codex read less, not think less.
 
-`v0.4.0-alpha`
+`1.0.0-dev`
 
-Token-Aware Orchestrator is an **AI Agent Context Optimization Layer**.
+Token-Aware Orchestrator (TOA) is a small, local control layer for OpenAI Codex CLI. It narrows the initial repository scope, applies a task token guardrail, runs Codex, and writes a JSON handoff containing test, diff, and usage evidence.
 
-It helps AI coding agents reduce unnecessary context reads so higher-capability models can spend tokens on high-value reasoning.
+It does not replace Codex, guarantee a fixed saving percentage, or make a weak task specification reliable.
 
-It does not replace your AI coding agent.
-It helps your existing agent use context more efficiently.
+## What is real today
 
-## Problem
+- Runs `codex exec --json` with a scoped task prompt.
+- Reads Codex's `turn.completed.usage` JSONL event and stores reported input, output, cached-input, and reasoning-output tokens.
+- Accepts structured task fields: task type, target model, maximum budget, priority, success criteria, and expected files.
+- Records execution, auto-detected test status, changed files, unexpected-file detection, context-circuit signals, and the complete handoff JSON.
+- Installs a Codex `SKILL.md` at `~/.codex/skills/token-aware-orchestrator/`.
+- Includes regression tests and GitHub Actions CI.
 
-AI coding agents are powerful, but they waste context reading irrelevant information.
+## What is not a claim
 
-Without context optimization, large amounts of history and unrelated files are repeatedly sent into tasks, causing:
-
-- inflated token spend,
-- weaker long-horizon focus,
-- and unnecessary handoff noise.
-
-## Solution
-
-- **Precise Localization**: route each task to the most relevant files/components only.
-- **Context Optimization**: apply candidate selection and context reduction before execution.
-- **Thread Protection**: protect execution with circuit-breaker controls and fallback behavior.
-- **State Persistence**: keep task context and progress safely persisted.
-- **Quality Verification**: keep tests and validation in the loop.
-
-## Benchmark
-
-Internal benchmark:
-
-- Task success: 5/5
-- Tests passed: 5/5
-- Context reduction: ~75.9%
-- Unexpected changes: 0
-
-Note:
-- Context reduction = measured.
-- Token reduction = estimated.
-
-## Agent Compatibility
-
-Designed to be agent-agnostic.
-
-### Current
-
-- OpenAI Codex
-
-### Future adapters (planned)
-
-- Claude Code
-- Gemini CLI
-- Grok-related coding workflows
-- Cursor
-- Other popular AI coding agents
-
-Core architecture is separated from agent adapters.
-
-## Architecture Diagram
-
-```mermaid
-flowchart LR
-    U[User]
-    A[AI Agent Adapter]
-    C[Token-Aware Orchestrator Core]
-    M[Localization / Context Management / Quality Guard]
-    E[Agent Execution]
-    U --> A --> C --> M --> E
-```
+- No universal “50% / 75.9% token saving” claim is made.
+- The included scripted benchmark is a regression smoke test, not AI or token-saving evidence.
+- A real benchmark requires two comparable Codex runs and their recorded usage fields.
+- Claude Code, Gemini CLI, Cursor, and other adapters are future work, not current integrations.
 
 ## Install
 
 ```bash
-cd /path/to/token-aware-orchestrator-v0-3-1
+git clone https://github.com/swordluan8-hash/token-aware-orchestrator.git
+cd token-aware-orchestrator
 python3 scripts/orchestratorctl.py install
-```
-
-The installer also generates a default config at:
-
-- `~/.config/token-aware-orchestrator/config.yaml`
-
-If needed, add `~/.local/bin` to PATH:
-
-```bash
 export PATH="$HOME/.local/bin:$PATH"
+token-aware-orchestrator status
 ```
 
-## Use
+The installer creates `~/.config/token-aware-orchestrator/config.yaml`, an executable shim in `~/.local/bin`, and the Codex skill file. It does not install the Codex CLI itself.
+
+## Run one real task
+
+Choose a model before starting:
+
+| Task | Model |
+| --- | --- |
+| Clear rename, formatting, test adjustment | `gpt-5.6-luna` |
+| Bug fix, normal multi-file implementation | `gpt-5.6-terra` |
+| Architecture, difficult debugging, final audit | `gpt-5.6-sol` |
 
 ```bash
-token-aware-orchestrator status
-token-aware-orchestrator report
+python3 scripts/orchestrator.py \
+  --task '{
+    "task":"Fix the zero-division behavior and add a regression test.",
+    "task_type":"bug_fix",
+    "target_model":"gpt-5.6-terra",
+    "max_budget":25000,
+    "priority":"high",
+    "success_criteria":["Regression test passes","No unrelated files change"],
+    "expected_files":["src/calculator.py","tests/test_calculator.py"]
+  }' \
+  --repo . \
+  --mode orchestrated \
+  --output outputs/first-real-run.json
 ```
 
-Run the orchestrated workflow with your existing agent runtime as normal for your target stack.
+Inspect the JSON output after each run:
 
-## Limitations
+```bash
+python3 - <<'PY'
+import json
+p = json.load(open('outputs/first-real-run.json'))
+h = p['handoff']
+print(h['execution'])
+print(h['accounting'])
+print(h['final'])
+PY
+```
 
-- Local Worker is optional and may fall back to direct execution.
-- `token_data` is estimated unless a future real token source is integrated.
-- Not a replacement for the underlying agent; it is a context optimization layer.
-- macOS is the default supported platform.
-- No GUI, no cloud service, no user account system, and no paid model management in this release.
+The authoritative usage values are `real_input_tokens`, `real_output_tokens`, `real_cached_tokens`, and `real_reasoning_output_tokens`. If they are `null`, the run did not provide usage data and must not be used as token evidence.
+
+`max_budget` now limits the initial context estimate and is checked again against reported Codex usage. If a completed turn reports usage above the limit, the executor stops before requesting another turn and records `budget_exceeded: true`. A budget is a control guardrail, not a guarantee that billed usage can be retroactively undone.
+
+Before launch, TOA also applies `executors.codex.preflight_overhead_tokens`. The default `48000` is a conservative baseline observed on the release-test Mac; if the requested budget is below this fixed Codex input overhead plus the task prompt, TOA returns `budget_preflight_blocked` without starting Codex. Calibrate this value on a different machine.
+
+If no test command can be detected, a successful execution is reported as `final.status: "review_required"` rather than being mislabeled as a task failure. The task still needs human or project-specific validation.
+
+## Benchmarking honestly
+
+Scripted smoke test only:
+
+```bash
+python3 scripts/benchmark.py --runner scripted --mode both --output-prefix smoke
+```
+
+Real Codex benchmark:
+
+```bash
+python3 scripts/benchmark.py --runner codex --mode both --output-prefix codex-real
+python3 scripts/orchestratorctl.py report --results outputs/codex-real-results.json
+```
+
+Use the same task set, repository fixture, Codex model, and configuration for the baseline and orchestrated runs. Compare recorded actual input and output tokens, success rate, tests, and unexpected changes. Do not publish a savings number until that comparison exists.
+
+## Recording checkpoints
+
+For a concise build video, record only these milestones:
+
+1. Baseline issue and task payload.
+2. First `turn.completed.usage` values from a real Codex run.
+3. Baseline versus orchestrated result JSON.
+4. CI passing on the pull request.
+5. Final release tag and README.
+
+## Development verification
+
+```bash
+python3 -m py_compile scripts/*.py
+python3 -m unittest discover -s tests -v
+git diff --check
+```
+
+## Limits
+
+- The runtime needs a working, authenticated Codex CLI on the machine running the task.
+- The budget is a guardrail, not a billing system; usage is only known after Codex reports it.
+- Automatic file localization is an initial scope hint. Codex may inspect more files when the task requires it.
+- macOS and Linux are the intended command-line environments for this release.

@@ -23,7 +23,7 @@ except Exception:  # pragma: no cover
     yaml = None
 
 
-SUPPORTED_EXECUTORS = ("command", "aider")
+SUPPORTED_EXECUTORS = ("command", "aider", "codex")
 
 
 def _estimate_tokens(byte_count: int, chars_per_token: int = 4) -> int:
@@ -71,7 +71,7 @@ def _circuit_checkpoint_text(state: ContextCircuitState, accounting: TokenAccoun
         f"trip_value={state.trip_value}\\n"
         f"trip_threshold={state.trip_threshold}\\n"
         f"risk_events={len(state.risk_signals)}\\n"
-        f"hand_off_version=0.3.1"
+        f"hand_off_version=1.0.0-dev"
     )
 
 
@@ -151,6 +151,11 @@ class TokenAccounting:
     real_input_tokens: Optional[int] = None
     real_output_tokens: Optional[int] = None
     real_cached_tokens: Optional[int] = None
+    real_reasoning_output_tokens: Optional[int] = None
+
+    budget_limit_tokens: Optional[int] = None
+    budget_preflight_context_bytes: int = 0
+    budget_exceeded: bool = False
 
     estimated_tokens: int = 0
     token_source: str = "estimated"
@@ -312,8 +317,8 @@ class TaskInput:
 
     @property
     def executor(self) -> str:
-        requested = str(self.payload.get("executor", "aider")).strip()
-        return requested if requested in SUPPORTED_EXECUTORS else "aider"
+        requested = str(self.payload.get("executor", "codex")).strip().lower()
+        return requested if requested in SUPPORTED_EXECUTORS else "codex"
 
     @property
     def actions(self) -> List[Dict[str, Any]]:
@@ -347,6 +352,37 @@ class TaskInput:
                     continue
                 env[str(key)] = str(value)
         return env
+
+    @property
+    def task_type(self) -> str:
+        return str(self.payload.get("task_type", "general")).strip() or "general"
+
+    @property
+    def target_model(self) -> Optional[str]:
+        value = self.payload.get("target_model")
+        if not isinstance(value, str) or not value.strip():
+            return None
+        return value.strip()
+
+    @property
+    def max_budget(self) -> Optional[int]:
+        value = self.payload.get("max_budget")
+        if isinstance(value, bool):
+            return None
+        try:
+            budget = int(value)
+        except (TypeError, ValueError):
+            return None
+        return budget if budget > 0 else None
+
+    @property
+    def priority(self) -> str:
+        return str(self.payload.get("priority", "normal")).strip() or "normal"
+
+    @property
+    def success_criteria(self) -> List[str]:
+        raw = self.payload.get("success_criteria")
+        return [str(item).strip() for item in raw if str(item).strip()] if isinstance(raw, list) else []
 
 
 @dataclass
@@ -576,6 +612,150 @@ class AiderExecutor(_BaseExecutor):
         if not fallback_cmd:
             return ExecutionSummary(False, "aider", attempt, None, "mock_no_fallback_command", "mock path requires command fallback", 0.0)
         return CommandExecutor().run(task, Path(config["_repo_cache"]), config, [], attempt, accounting, context_circuit=context_circuit)
+
+
+def _parse_codex_jsonl(raw: str) -> Dict[str, Optional[int]]:
+    """Extract aggregate usage from the JSONL stream emitted by `codex exec --json`."""
+    totals: Dict[str, int] = {"input": 0, "output": 0, "cache": 0, "reasoning_output": 0}
+    seen = False
+    for line in (raw or "").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict) or event.get("type") != "turn.completed":
+            continue
+        usage = event.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        seen = True
+        for source, target in (
+            ("input_tokens", "input"),
+            ("output_tokens", "output"),
+            ("cached_input_tokens", "cache"),
+            ("reasoning_output_tokens", "reasoning_output"),
+        ):
+            value = usage.get(source)
+            if isinstance(value, int) and value >= 0:
+                totals[target] += value
+    if not seen:
+        return {key: None for key in totals}
+    return totals
+
+
+def _reported_usage_total(usage: Dict[str, Optional[int]]) -> Optional[int]:
+    if usage.get("input") is None or usage.get("output") is None:
+        return None
+    return int(usage["input"] or 0) + int(usage["output"] or 0)
+
+
+class CodexExecutor(_BaseExecutor):
+    """Run the real Codex CLI and retain its authoritative usage events."""
+
+    name = "codex"
+
+    def run(
+        self,
+        task: TaskInput,
+        repo: Path,
+        config: Dict[str, Any],
+        selected_files: List[str],
+        attempt: int,
+        accounting: TokenAccounting,
+        context_circuit: Optional[ContextCircuitState] = None,
+    ) -> ExecutionSummary:
+        codex_cfg = config["executors"].get("codex", {})
+        binary = str(codex_cfg.get("binary") or "codex")
+        timeout = int(codex_cfg.get("command_timeout_seconds", config["controls"]["execution"].get("command_timeout_seconds", 120)))
+        sandbox = str(codex_cfg.get("sandbox") or "workspace-write")
+        model = str(codex_cfg.get("model") or task.target_model or "").strip()
+        fixed_overhead_tokens = int(codex_cfg.get("preflight_overhead_tokens", 48_000))
+
+        scope_note = ""
+        if selected_files:
+            scope_note = (
+                "\n\nInitial repository scope selected by the orchestrator:\n"
+                + "\n".join(f"- {path}" for path in selected_files)
+                + "\nInspect these first. Do not modify files outside the task unless necessary."
+            )
+        prompt = task.task_text + scope_note
+        accounting.budget_limit_tokens = task.max_budget
+        estimated_prompt_tokens = _estimate_tokens(len(prompt.encode("utf-8", errors="ignore")))
+        estimated_minimum_tokens = fixed_overhead_tokens + estimated_prompt_tokens
+        if task.max_budget is not None and estimated_minimum_tokens > task.max_budget:
+            return ExecutionSummary(
+                False,
+                "codex",
+                attempt,
+                None,
+                "budget_preflight_blocked",
+                "estimated_minimum_tokens="
+                f"{estimated_minimum_tokens} (fixed_overhead={fixed_overhead_tokens}; prompt={estimated_prompt_tokens}) "
+                f"exceeds max_budget={task.max_budget}",
+                0.0,
+            )
+        cmd = [binary, "exec", "--json", "--sandbox", sandbox]
+        if model:
+            cmd.extend(["--model", model])
+        extra_args = codex_cfg.get("extra_args", [])
+        if isinstance(extra_args, list):
+            cmd.extend(map(str, extra_args))
+        cmd.append(prompt)
+
+        start = time.perf_counter()
+        stdout_lines: List[str] = []
+        stderr_text = ""
+        budget_exceeded = False
+        try:
+            process = subprocess.Popen(
+                cmd,
+                cwd=str(repo),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=1,
+            )
+            assert process.stdout is not None
+            for line in process.stdout:
+                stdout_lines.append(line)
+                usage_now = _parse_codex_jsonl("".join(stdout_lines))
+                total_now = _reported_usage_total(usage_now)
+                if task.max_budget is not None and total_now is not None and total_now > task.max_budget:
+                    budget_exceeded = True
+                    accounting.budget_exceeded = True
+                    process.terminate()
+                    break
+            remaining_stdout, stderr_text = process.communicate(timeout=timeout)
+            if remaining_stdout:
+                stdout_lines.append(remaining_stdout)
+            cp = subprocess.CompletedProcess(cmd, process.returncode, "".join(stdout_lines), stderr_text or "")
+        except FileNotFoundError:
+            return ExecutionSummary(False, "codex", attempt, None, "codex_not_found", f"binary not found: {binary}", 0.0)
+        except subprocess.TimeoutExpired as exc:
+            raw = ((exc.stdout or "") + (exc.stderr or "")) if isinstance(exc.stdout, str) else ""
+            accounting.add_tool_output(raw)
+            return ExecutionSummary(False, "codex", attempt, None, "timeout", raw[:12000], (time.perf_counter() - start) * 1000.0)
+
+        elapsed = (time.perf_counter() - start) * 1000.0
+        raw_output = (cp.stdout or "") + (cp.stderr or "")
+        output_limit = int(config["controls"]["context_circuit"].get("tool_output_warning_bytes", 80_000))
+        trimmed, _, trimmed_bytes = _truncate_text(raw_output, output_limit)
+        accounting.add_tool_output(trimmed, truncated=(trimmed_bytes > 0), truncated_bytes=trimmed_bytes, measured_bytes=len(raw_output.encode("utf-8", errors="ignore")))
+
+        usage = _parse_codex_jsonl(cp.stdout or "")
+        accounting.real_input_tokens = usage["input"]
+        accounting.real_output_tokens = usage["output"]
+        accounting.real_cached_tokens = usage["cache"]
+        accounting.real_reasoning_output_tokens = usage["reasoning_output"]
+        actual_total = _reported_usage_total(usage)
+        budget_detail = ""
+        if task.max_budget is not None and actual_total is not None:
+            budget_detail = f"; reported_total={actual_total}; max_budget={task.max_budget}"
+        if budget_exceeded:
+            detail = f"budget_exceeded; returncode={cp.returncode}; usage=actual{budget_detail}"
+        else:
+            detail = f"returncode={cp.returncode}; usage={'actual' if usage['input'] is not None else 'unavailable'}{budget_detail}"
+        return ExecutionSummary((cp.returncode == 0) and not budget_exceeded, "codex", attempt, cp.returncode, detail, trimmed[:12000], elapsed)
 
 
 def _parse_aider_tokens(raw: str) -> Dict[str, Optional[int]]:
@@ -941,10 +1121,17 @@ def _build_context(
         selected_prompt = base.prompt
     else:
         selected = _select_files_for_orchestrated(repo, task, config)
+        after_limit = int(config["context"].get("max_after_bytes", 80_000))
+        if task.max_budget is not None:
+            task_bytes = len(task.task_text.encode("utf-8", errors="ignore"))
+            budget_bytes = max(0, (task.max_budget * 4) - task_bytes - 512)
+            after_limit = min(after_limit, budget_bytes)
+            accounting.budget_limit_tokens = task.max_budget
+            accounting.budget_preflight_context_bytes = after_limit
         sel = _collect_context(
             repo,
             selected,
-            int(config["context"].get("max_after_bytes", 80_000)),
+            after_limit,
             accounting=accounting,
             circuit=circuit,
         )
@@ -964,18 +1151,33 @@ def _build_context(
 
 def _route(task: TaskInput, config: Dict[str, Any], mode: str, force_mock: bool = False) -> RoutingDecision:
     if mode == "baseline":
+        if task.executor == "command":
+            return RoutingDecision(
+                route="command",
+                reason="baseline_scripted_command",
+                executor_mode="command",
+                local_preferred=False,
+            )
         return RoutingDecision(
             route="codex_direct",
-            reason="baseline_mode_disabled_local_routing",
-            executor_mode="codex_direct",
+            reason="baseline_mode_direct_codex",
+            executor_mode="codex",
+            local_preferred=False,
+        )
+
+    if task.executor == "codex":
+        return RoutingDecision(
+            route="codex_direct",
+            reason="codex_executor_requested",
+            executor_mode="codex",
             local_preferred=False,
         )
 
     if task.executor != "aider":
         return RoutingDecision(
-            route="codex_direct",
-            reason="executor_not_aider",
-            executor_mode="codex_direct",
+            route="command",
+            reason="command_executor_requested",
+            executor_mode="command",
             local_preferred=False,
         )
 
@@ -984,7 +1186,7 @@ def _route(task: TaskInput, config: Dict[str, Any], mode: str, force_mock: bool 
         return RoutingDecision(
             route="codex_direct",
             reason="local_disabled",
-            executor_mode="codex_direct",
+            executor_mode="codex",
             local_preferred=False,
         )
 
@@ -992,7 +1194,7 @@ def _route(task: TaskInput, config: Dict[str, Any], mode: str, force_mock: bool 
         return RoutingDecision(
             route="codex_direct",
             reason="task_too_long_for_local",
-            executor_mode="codex_direct",
+            executor_mode="codex",
             local_preferred=False,
         )
 
@@ -1014,7 +1216,7 @@ def _route(task: TaskInput, config: Dict[str, Any], mode: str, force_mock: bool 
         return RoutingDecision(
             route="codex_direct",
             reason=f"local_probe_failed:{probe.status}",
-            executor_mode="codex_direct",
+            executor_mode="codex",
             local_preferred=True,
             probe=probe.to_json(),
         )
@@ -1179,7 +1381,10 @@ def _run_git_diff(repo: Path, context_circuit: Optional[ContextCircuitState] = N
         diff_bytes = raw_diff_bytes
 
     return {
-        "files": files,
+        # The handoff and quality gate consume `changed_files`.  Keep this
+        # public field stable so unexpected-file detection cannot silently
+        # report a clean diff after a task changed files outside its scope.
+        "changed_files": files,
         "files_changed_count": len(files),
         "diff_excerpt": excerpt[:12_000],
         "diff_bytes": diff_bytes,
@@ -1199,6 +1404,8 @@ def _run_executor(
 ) -> ExecutionSummary:
     if name == "command":
         return CommandExecutor().run(task, repo, config, selected_files, attempt, accounting, context_circuit=context_circuit)
+    if name == "codex":
+        return CodexExecutor().run(task, repo, config, selected_files, attempt, accounting, context_circuit=context_circuit)
     return AiderExecutor().run(task, repo, config, selected_files, attempt, accounting, context_circuit=context_circuit)
 
 
@@ -1270,14 +1477,24 @@ def orchestrate(
         if expected_files:
             unexpected_files = [item for item in changed_files if item not in expected_files]
 
-        handoff_risk = bool(context_circuit.tripped) or test_section.get("status") == "unknown"
+        no_test_command = test_section.get("status") == "unknown" and test_section.get("reason") == "test_command_not_found"
+        handoff_risk = bool(context_circuit.tripped)
         final_task_success = (
             execution_obj.success
             and test_section.get("status") == "passed"
             and not unexpected_files
             and not handoff_risk
         )
-        final_status = "interrupted" if context_circuit.tripped else ("success" if final_task_success else "failed")
+        budget_blocked = execution_obj.detail.startswith("budget_preflight_blocked")
+        budget_exceeded = execution_obj.detail.startswith("budget_exceeded")
+        if budget_blocked or budget_exceeded:
+            final_status = "budget_preflight_blocked" if budget_blocked else "budget_exceeded"
+        elif context_circuit.tripped:
+            final_status = "interrupted"
+        elif no_test_command and execution_obj.success and not unexpected_files:
+            final_status = "review_required"
+        else:
+            final_status = "success" if final_task_success else "failed"
 
         requires_codex_review = (
             context_circuit.tripped
@@ -1323,10 +1540,14 @@ def orchestrate(
             "real_input_tokens": handoff_accounting.get("real_input_tokens"),
             "real_output_tokens": handoff_accounting.get("real_output_tokens"),
             "real_cached_tokens": handoff_accounting.get("real_cached_tokens"),
+            "real_reasoning_output_tokens": handoff_accounting.get("real_reasoning_output_tokens"),
+            "budget_limit_tokens": handoff_accounting.get("budget_limit_tokens"),
+            "budget_preflight_context_bytes": handoff_accounting.get("budget_preflight_context_bytes"),
+            "budget_exceeded": handoff_accounting.get("budget_exceeded"),
         }
 
         handoff = {
-            "version": "0.3.1",
+            "version": "1.0.0-dev",
             "task_id": hashlib.sha1((task.raw + str(start_all)).encode("utf-8", errors="ignore")).hexdigest()[:16],
             "route": final_route,
             "routing": final_route,
@@ -1366,10 +1587,15 @@ def orchestrate(
                 "requires_codex_review": bool(requires_codex_review),
                 "wall_clock_ms": (time.perf_counter() - start_all) * 1000.0,
                 "interrupt": bool(context_circuit.tripped),
-                "next_step": "continue_from_handoff_if_needed",
+                "next_step": "run_tests_or_review" if final_status == "review_required" else "continue_from_handoff_if_needed",
             },
             "task": {
                 "executor": task.executor,
+                "task_type": task.task_type,
+                "target_model": task.target_model,
+                "max_budget": task.max_budget,
+                "priority": task.priority,
+                "success_criteria": task.success_criteria,
                 "expected_files": expected_files,
             },
         }
@@ -1412,8 +1638,8 @@ def orchestrate(
                 "selected_files": selected,
             }, "handoff": handoff}
     else:
-        # local bypass path still reads reduced context for fair accounting
-        _build_context(repo_path, task, config, mode, accounting, circuit=context_circuit)
+        # Direct Codex still receives the selected scope as task guidance.
+        selected = _build_context(repo_path, task, config, mode, accounting, circuit=context_circuit)
         if maybe_abort_after("build_context", source_read=accounting.candidate_bytes):
             handoff = build_handoff(ExecutionSummary(False, "context_circuit", 0, None, "context_risk", "", 0.0), False)
             accounting.finalize_tokens()
@@ -1455,11 +1681,10 @@ def orchestrate(
         if not execution.success:
             escalated = True
             accounting.escalation_count += 1
-            final_executor_mode = "codex_direct"
-            accounting.codex_direct_calls += 1
+            final_executor_mode = "codex"
             if not context_circuit.tripped:
                 execution = _run_executor(
-                    "command",
+                    "codex",
                     config,
                     task,
                     repo_path,
@@ -1468,6 +1693,8 @@ def orchestrate(
                     accounting,
                     context_circuit=context_circuit,
                 )
+                if not execution.detail.startswith("budget_preflight_blocked"):
+                    accounting.codex_direct_calls += 1
                 maybe_abort_after("codex_escalation")
             if context_circuit.tripped:
                 handoff = build_handoff(execution, escalated)
@@ -1483,10 +1710,12 @@ def orchestrate(
                 }, "handoff": handoff}
 
     else:
-        accounting.codex_direct_calls += 1
-        execution = _run_executor("command", config, task, repo_path, [], 1, accounting, context_circuit=context_circuit)
-        maybe_abort_after("codex_direct")
-        final_executor_mode = "codex_direct"
+        executor_name = "codex" if route.route == "codex_direct" else "command"
+        execution = _run_executor(executor_name, config, task, repo_path, selected, 1, accounting, context_circuit=context_circuit)
+        if executor_name == "codex" and not execution.detail.startswith("budget_preflight_blocked"):
+            accounting.codex_direct_calls += 1
+        maybe_abort_after("codex_direct" if executor_name == "codex" else "command_execution")
+        final_executor_mode = route.executor_mode
 
     if context_circuit.tripped:
         handoff = build_handoff(execution, escalated)
@@ -1564,6 +1793,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", default=None, help="config yaml path")
     parser.add_argument("--mode", choices=["baseline", "orchestrated"], default="orchestrated")
     parser.add_argument("--mock-local", action="store_true", help="force local worker mock mode")
+    parser.add_argument("--output", default=None, help="write the complete routing and handoff payload to a JSON file")
     parser.add_argument("--print-routing", action="store_true", default=True)
     parser.add_argument("--print-handoff", action="store_true", default=True)
     return parser
@@ -1579,13 +1809,18 @@ def main(argv=None) -> int:
         _print_json({"error": str(exc), "mode": args.mode, "task": args.task})
         return 1
 
+    if args.output:
+        output_path = Path(args.output).expanduser().resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+
     if args.print_routing:
         _print_json({"kind": "routing", "payload": payload["routing"]})
     if args.print_handoff:
         _print_json({"kind": "handoff", "payload": payload["handoff"]})
 
     final_status = payload["handoff"].get("final", {}).get("status")
-    return 0 if final_status == "success" else 1
+    return 0 if final_status in {"success", "review_required"} else 1
 
 
 if __name__ == "__main__":

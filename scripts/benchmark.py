@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import math
 import shutil
@@ -683,13 +684,27 @@ def run_one(
     template: Path,
     config_path: Path,
     mock_local: bool,
+    runner: str = "scripted",
     raw_output_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     with tempfile.TemporaryDirectory() as td:
         repo = Path(td) / "repo"
         shutil.copytree(template, repo)
+        task_payload = copy.deepcopy(task.payload)
+        if runner == "codex":
+            # The former fixture command made the benchmark a test of its own
+            # shell scripts, not a test of an AI agent.  Real mode delegates
+            # the task to Codex and keeps the same success assertions.
+            task_payload["executor"] = "codex"
+            task_payload.pop("command", None)
+            task_payload.pop("actions", None)
+        else:
+            # Legacy fixture mode intentionally runs the deterministic command
+            # in both modes. It is retained only as a smoke test and is never
+            # evidence of AI task success or token savings.
+            task_payload["executor"] = "command"
         result = run_orchestrator(
-            task.payload,
+            task_payload,
             repo,
             config_path,
             mode,
@@ -765,6 +780,7 @@ def run_one(
             "actual_input_tokens": real_input,
             "actual_output_tokens": real_output,
             "actual_cached_tokens": accounting.get("real_cached_tokens"),
+            "actual_reasoning_output_tokens": accounting.get("real_reasoning_output_tokens"),
             "source_truncated_bytes": _safe_int(accounting.get("source_truncated_bytes")),
             "context_circuit_trip": bool(context_circuit.get("tripped")),
             "context_circuit_trip_stage": context_circuit.get("trip_stage"),
@@ -773,9 +789,10 @@ def run_one(
             "test_exit_code": _safe_int(test.get("exit_code", -1)),
             "candidate_context_before_bytes": context_before,
             "candidate_context_after_bytes": context_after,
-            "worker_mode": (
+            "runner": runner,
+            "worker_mode": "REAL_CODEX" if runner == "codex" else (
                 "MOCK" if (mock_local and mode == "orchestrated") else
-                ("REAL_ORCHESTRATED" if mode == "orchestrated" else "BASELINE_NO_LOCAL")
+                ("SCRIPTED_ORCHESTRATED" if mode == "orchestrated" else "SCRIPTED_BASELINE")
             ),
         }
 
@@ -798,9 +815,13 @@ def summarize(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         execution_time = sum(_safe_float(r["execution_time_ms"]) for r in mode_rows)
         estimated_input_total = sum(_safe_int(r["estimated_input_tokens"]) for r in mode_rows)
         estimated_output_total = sum(_safe_int(r["estimated_output_tokens"]) for r in mode_rows)
+        actual_input_rows = [r for r in mode_rows if isinstance(r.get("actual_input_tokens"), int)]
+        actual_input_total = sum(_safe_int(r["actual_input_tokens"]) for r in actual_input_rows)
         retry_count = sum(_safe_int(r["retry_count"]) for r in mode_rows)
 
-        local_ratio = 0.0 if local_calls + codex_calls == 0 else local_calls / (local_calls + codex_calls)
+        execution_calls = local_calls + codex_calls
+        local_ratio = 0.0 if execution_calls == 0 else local_calls / execution_calls
+        codex_ratio = 0.0 if execution_calls == 0 else codex_calls / execution_calls
         return {
             "count": n,
             "task_success": task_success,
@@ -813,10 +834,11 @@ def summarize(records: List[Dict[str, Any]]) -> Dict[str, Any]:
             "context_after_bytes_total": context_after_total,
             "estimated_context_tokens_before_total": estimated_input_total,
             "estimated_context_tokens_after_total": estimated_output_total,
+            "actual_input_tokens_total": actual_input_total if len(actual_input_rows) == n else None,
             "escalation_rate": escalations / n if n else 0.0,
             "unexpected_change_rate": unexpected_changes / n if n else 0.0,
             "local_execution_ratio": local_ratio,
-            "codex_execution_ratio": 1 - local_ratio if n else 0.0,
+            "codex_execution_ratio": codex_ratio,
             "avg_execution_time_ms": execution_time / n if n else 0.0,
             "total_execution_time_ms": execution_time,
             "local_execution_calls": local_calls,
@@ -1181,6 +1203,7 @@ def parse_args() -> argparse.ArgumentParser:
     p.add_argument("--config", default=str(ROOT / "config.example.yaml"))
     p.add_argument("--mode", choices=["both", "baseline", "orchestrated"], default="both")
     p.add_argument("--mock-local", action="store_true")
+    p.add_argument("--runner", choices=["scripted", "codex"], default="scripted", help="scripted runs fixture commands; codex runs real Codex tasks")
     p.add_argument("--output-prefix", default="benchmark", help="output filename prefix under outputs/")
     p.add_argument("--ablation", action="store_true", help="run ablation mode matrix and persist mode-level progress")
     p.add_argument("--ablation-modes", default="BASELINE,FULL,NO_LOCAL_WORKER,NO_CONTEXT_FILTERING,NO_PRECISE_LOCALIZATION,MINIMAL_CORE")
@@ -1201,6 +1224,8 @@ def parse_args() -> argparse.ArgumentParser:
 
 def main(argv=None) -> int:
     args = parse_args().parse_args(argv)
+    if args.ablation and args.runner == "codex":
+        raise SystemExit("--ablation currently supports only --runner scripted")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory() as td:
@@ -1226,7 +1251,7 @@ def main(argv=None) -> int:
             modes = ["baseline", "orchestrated"] if args.mode == "both" else [args.mode]
             for mode in modes:
                 for task in tasks:
-                    records.append(run_one(task, mode, template, Path(args.config), args.mock_local))
+                    records.append(run_one(task, mode, template, Path(args.config), args.mock_local, runner=args.runner))
 
             summary = summarize(records)
             results = {
@@ -1237,13 +1262,16 @@ def main(argv=None) -> int:
                 "bench_env": {
                     "mock_local_enabled": bool(args.mock_local),
                     "mock_local_for_orchestrated": bool(args.mock_local),
-                    "token_count_mode": "ESTIMATED",
-                    "worker_scope": "MOCK" if args.mock_local else "CONFIG_UNSPECIFIED",
+                    "token_count_mode": "ACTUAL" if args.runner == "codex" else "ESTIMATED",
+                    "runner": args.runner,
+                    "worker_scope": "REAL_CODEX" if args.runner == "codex" else ("MOCK" if args.mock_local else "CONFIG_UNSPECIFIED"),
                 },
                 "methodology": {
                     "template_reset": "temporary git repo per task/mode",
                     "same_task_per_mode": True,
                     "same_initial_commit": True,
+                    "real_agent_execution": args.runner == "codex",
+                    "usage_source": "codex exec --json turn.completed events" if args.runner == "codex" else "scripted fixture / estimated context proxy",
                 },
             }
             print(f"completed_modes={','.join(modes)}")

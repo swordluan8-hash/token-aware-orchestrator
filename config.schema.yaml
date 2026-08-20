@@ -81,6 +81,21 @@ schema:
               type: integer
             mode:
               type: string
+        codex:
+          type: object
+          properties:
+            binary:
+              type: string
+            model:
+              type: string
+            extra_args:
+              type: array
+            command_timeout_seconds:
+              type: integer
+            sandbox:
+              type: string
+            preflight_overhead_tokens:
+              type: integer
     context:
       type: object
       properties:
@@ -177,6 +192,12 @@ defaults:
       extra_args: []
       command_timeout_seconds: 120
       mode: real
+    codex:
+      binary: codex
+      model: ""
+      extra_args: []
+      command_timeout_seconds: 600
+      sandbox: workspace-write
   context:
     max_candidate_bytes: 200000
     max_after_bytes: 80000

@@ -1,27 +1,13 @@
-# Release Checklist (v0.4.0-alpha)
+# Release Checklist (V1.0.0)
 
-Use this checklist before publishing the GitHub Release Candidate.
-
-- [ ] **No personal paths**
-  - Search and remove/replace hard-coded paths containing local usernames or device paths.
-  - Confirm docs/examples use generic placeholders (`/path/to/...`).
-- [ ] **No API keys / credentials**
-  - Confirm no API keys are present in tracked files.
-  - Confirm no provider tokens or secrets are embedded in config examples.
-- [ ] **No private/local config artifacts**
-  - Remove install state files and machine-specific cache/handoff logs from distributable root.
-- [ ] **README complete**
-  - Title: `Token-Aware Orchestrator`
-  - Tagline included.
-  - Problem / Solution / Agent Compatibility / Architecture / Benchmark / Install / Usage / Limitations sections present.
-- [ ] **Install test passed**
-  - `python3 scripts/orchestratorctl.py install`
-- [ ] **Status test passed**
-  - `token-aware-orchestrator status`
-- [ ] **Report test passed**
-  - `token-aware-orchestrator report --json` or plain text.
-- [ ] **Benchmark labeling**
-  - Benchmark report indicates token data source as `REAL / ESTIMATED / MOCK` and does not claim exact-token precision.
-- [ ] **License**
-- [ ] Apache 2.0 license file exists in repo root.
-
+- [ ] `python3 -m py_compile scripts/*.py` passes.
+- [ ] `python3 -m unittest discover -s tests -v` passes.
+- [ ] `git diff --check` is clean.
+- [ ] GitHub Actions CI passes on the release branch.
+- [ ] `python3 scripts/orchestratorctl.py install` creates the CLI, config, and `SKILL.md`.
+- [ ] `token-aware-orchestrator status` finds a working Codex CLI on the release-test Mac.
+- [ ] A real `codex exec --json` task writes non-null `real_input_tokens` and `real_output_tokens`.
+- [ ] A baseline and orchestrated real-Codex comparison uses the same fixture, model, and task set.
+- [ ] README reports only measured results from that comparison; no proxy result is presented as real token savings.
+- [ ] No personal paths, credentials, local install state, or run artifacts are tracked.
+- [ ] License is present and correct.
