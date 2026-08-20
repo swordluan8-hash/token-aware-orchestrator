@@ -24,6 +24,9 @@ except Exception:  # pragma: no cover
 
 
 SUPPORTED_EXECUTORS = ("command", "aider", "codex")
+# Serena creates this directory as local assistant state. It is not a task
+# change and therefore must not fail the project-diff quality gate.
+TOOL_METADATA_PATHS = (".serena",)
 
 
 def _estimate_tokens(byte_count: int, chars_per_token: int = 4) -> int:
@@ -41,10 +44,15 @@ def _truncate_text(raw: str, max_bytes: int, marker: str = "[context-circuit-tri
     marker_bytes = marker.encode("utf-8", errors="ignore")
     avail = max_bytes - len(marker_bytes)
     if avail <= 0:
-        return marker[:max_bytes], True, len(raw.encode("utf-8", errors="ignore"))
-    head = encoded[: max(1, avail // 2)]
-    tail = encoded[-max(1, avail // 2):] if avail - len(head) > 1 else b""
+        trimmed = marker_bytes[:max_bytes].decode("utf-8", errors="ignore")
+        return trimmed, True, len(raw.encode("utf-8", errors="ignore")) - len(trimmed.encode("utf-8", errors="ignore"))
+    head_bytes = max(1, avail // 2)
+    tail_bytes = max(0, avail - head_bytes)
+    head = encoded[:head_bytes]
+    tail = encoded[-tail_bytes:] if tail_bytes else b""
     trimmed = (head + marker_bytes + tail).decode("utf-8", errors="ignore")
+    while len(trimmed.encode("utf-8", errors="ignore")) > max_bytes:
+        trimmed = trimmed[:-1]
     return trimmed, True, len(raw.encode("utf-8", errors="ignore")) - len(trimmed.encode("utf-8", errors="ignore"))
 
 
@@ -55,6 +63,7 @@ def _estimate_context_pressure_bytes(accounting: TokenAccounting) -> int:
         accounting.codex_context_after_bytes
         + accounting.log_raw_bytes
         + accounting.tool_output_bytes
+        + accounting.test_output_bytes
         + accounting.git_diff_bytes
         + accounting.log_truncated_bytes
     )
@@ -111,6 +120,13 @@ def _update_context_circuit(state: ContextCircuitState, accounting: TokenAccount
         state.trip(stage, "tool_output_bytes", accounting.tool_output_bytes, state.tool_output_warning_bytes, level="warning")
         return True
 
+    if accounting.test_output_bytes > state.test_output_hard_bytes:
+        state.trip(stage, "test_output_bytes", accounting.test_output_bytes, state.test_output_hard_bytes, level="hard")
+        return True
+    if accounting.test_output_bytes > state.test_output_warning_bytes:
+        state.trip(stage, "test_output_bytes", accounting.test_output_bytes, state.test_output_warning_bytes, level="warning")
+        return True
+
     if accounting.git_diff_bytes > state.diff_hard_bytes:
         state.trip(stage, "git_diff_bytes", accounting.git_diff_bytes, state.diff_hard_bytes, level="hard")
         return True
@@ -142,6 +158,9 @@ class TokenAccounting:
     # byte counts are audit-only evidence and must not inflate Context Guard.
     tool_output_bytes: int = 0
     tool_output_raw_bytes: int = 0
+    test_output_bytes: int = 0
+    test_output_raw_bytes: int = 0
+    test_output_truncated_bytes: int = 0
     source_truncated_bytes: int = 0
     tool_output_truncated_bytes: int = 0
     log_truncated_bytes: int = 0
@@ -187,6 +206,21 @@ class TokenAccounting:
         self.tool_output_raw_bytes += max(0, measured_bytes)
         if truncated:
             self.tool_output_truncated_bytes += max(0, truncated_bytes)
+
+    def add_test_output(
+        self,
+        retained: str,
+        truncated: bool = False,
+        truncated_bytes: int = 0,
+        measured_bytes: Optional[int] = None,
+    ) -> None:
+        if retained is None:
+            return
+        retained_bytes = len(retained.encode("utf-8", errors="ignore"))
+        self.test_output_bytes += retained_bytes
+        self.test_output_raw_bytes += max(0, measured_bytes if measured_bytes is not None else retained_bytes)
+        if truncated:
+            self.test_output_truncated_bytes += max(0, truncated_bytes)
 
     def set_context(self, before: int, after: int) -> None:
         self.codex_context_before_bytes = max(0, before)
@@ -1276,17 +1310,17 @@ def _run_tests(
     elapsed = (time.perf_counter() - start) * 1000.0
     raw_output = (cp.stdout or "") + (cp.stderr or "")
     output_limit = int(config["controls"]["context_circuit"].get("test_output_warning_bytes", 120_000))
-    output, _, trimmed_bytes = _truncate_text(raw_output, output_limit, "[test-output-trimmed-by-circuit]")
+    handoff_limit = min(output_limit, 12_000)
+    output, _, trimmed_bytes = _truncate_text(raw_output, handoff_limit, "[test-output-trimmed-by-circuit]")
     raw_output_bytes = len(raw_output.encode("utf-8", errors="ignore"))
     if accounting is not None:
-        accounting.add_log(raw_output, truncated=(trimmed_bytes > 0), truncated_bytes=trimmed_bytes)
-        accounting.add_tool_output(
+        accounting.add_test_output(
             output,
             truncated=(trimmed_bytes > 0),
             truncated_bytes=trimmed_bytes,
             measured_bytes=raw_output_bytes,
         )
-    if trimmed_bytes > 0 and context_circuit is not None:
+    if raw_output_bytes > output_limit and context_circuit is not None:
         context_circuit.truncated_due_circuit["test_output"] = context_circuit.truncated_due_circuit.get("test_output", 0) + 1
         context_circuit.note(
             "tests",
@@ -1351,6 +1385,11 @@ def _find_test_command(project: str, repo: Path, config: Dict[str, Any]) -> Opti
     return None
 
 
+def _is_tool_metadata_path(path: str) -> bool:
+    normalized = path.strip().strip("/")
+    return any(normalized == ignored or normalized.startswith(f"{ignored}/") for ignored in TOOL_METADATA_PATHS)
+
+
 def _run_git_diff(repo: Path, context_circuit: Optional[ContextCircuitState] = None) -> Dict[str, Any]:
     status = subprocess.run(["git", "status", "--short"], cwd=str(repo), text=True, capture_output=True)
     diff = subprocess.run(["git", "diff"], cwd=str(repo), text=True, capture_output=True)
@@ -1361,7 +1400,7 @@ def _run_git_diff(repo: Path, context_circuit: Optional[ContextCircuitState] = N
             parts = path.split()
             if parts:
                 path = parts[0]
-            if "__pycache__" in path:
+            if "__pycache__" in path or _is_tool_metadata_path(path):
                 continue
             files.append(path)
     files = sorted({item for item in files if item})
@@ -1535,6 +1574,9 @@ def orchestrate(
             "tool_output_bytes": handoff_accounting.get("tool_output_bytes"),
             "tool_output_raw_bytes": handoff_accounting.get("tool_output_raw_bytes"),
             "tool_output_truncated_bytes": handoff_accounting.get("tool_output_truncated_bytes"),
+            "test_output_bytes": handoff_accounting.get("test_output_bytes"),
+            "test_output_raw_bytes": handoff_accounting.get("test_output_raw_bytes"),
+            "test_output_truncated_bytes": handoff_accounting.get("test_output_truncated_bytes"),
             "log_truncated_bytes": handoff_accounting.get("log_truncated_bytes"),
             "source_truncated_bytes": handoff_accounting.get("source_truncated_bytes"),
             "git_diff_bytes": handoff_accounting.get("git_diff_bytes"),
