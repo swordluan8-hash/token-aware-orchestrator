@@ -64,6 +64,16 @@ class CodexUsageTests(unittest.TestCase):
 
         self.assertEqual(orchestrator._estimate_context_pressure_bytes(accounting), 12_000)
 
+    def test_trimmed_tool_output_does_not_raise_context_pressure(self) -> None:
+        accounting = orchestrator.TokenAccounting(mode="orchestrated")
+        accounting.codex_context_after_bytes = 12_000
+        accounting.add_tool_output("retained", truncated=True, truncated_bytes=900_000, measured_bytes=900_008)
+
+        self.assertEqual(accounting.tool_output_bytes, len("retained"))
+        self.assertEqual(accounting.tool_output_raw_bytes, 900_008)
+        self.assertEqual(accounting.tool_output_truncated_bytes, 900_000)
+        self.assertEqual(orchestrator._estimate_context_pressure_bytes(accounting), 12_000 + len("retained"))
+
     def test_parse_codex_jsonl_usage(self) -> None:
         raw = "\n".join(
             [
@@ -225,6 +235,30 @@ class PersistenceTests(unittest.TestCase):
         self.assertEqual(payload["handoff"]["accounting"]["codex_direct_calls"], 0)
         self.assertEqual(payload["handoff"]["final"]["status"], "review_required")
         self.assertFalse(payload["handoff"]["final"]["task_success"])
+
+    def test_cli_always_reports_unexpected_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            import subprocess
+
+            subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+            output = Path(tmp) / "runs" / "task.json"
+            task = json.dumps(
+                {
+                    "task": "create one file",
+                    "executor": "command",
+                    "command": "printf changed > unexpected.py",
+                    "expected_files": ["expected.py"],
+                }
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = orchestrator.main(["--task", task, "--repo", str(repo), "--output", str(output)])
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(result, 1)
+        self.assertEqual(payload["handoff"]["final"]["status"], "failed")
+        self.assertEqual(payload["handoff"]["diff"]["unexpected_files"], ["unexpected.py"])
 
 
 class BenchmarkSummaryTests(unittest.TestCase):

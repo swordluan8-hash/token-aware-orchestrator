@@ -761,6 +761,8 @@ def run_one(
             "raw_log_bytes": _safe_int(accounting.get("log_raw_bytes")),
             "retained_log_bytes": _safe_int(accounting.get("log_filtered_bytes")),
             "tool_output_bytes": _safe_int(accounting.get("tool_output_bytes")),
+            "tool_output_raw_bytes": _safe_int(accounting.get("tool_output_raw_bytes")),
+            "tool_output_truncated_bytes": _safe_int(accounting.get("tool_output_truncated_bytes")),
             "diff_bytes": _safe_int(diff.get("diff_raw_bytes", diff.get("diff_bytes", 0))),
             "execution_time_ms": _safe_float(final.get("wall_clock_ms")),
             "local_worker_calls": _safe_int(accounting.get("local_worker_calls")),

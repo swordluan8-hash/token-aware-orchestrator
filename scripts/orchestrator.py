@@ -49,15 +49,14 @@ def _truncate_text(raw: str, max_bytes: int, marker: str = "[context-circuit-tri
 
 
 def _estimate_context_pressure_bytes(accounting: TokenAccounting) -> int:
-    # Excluded source remains useful accounting evidence, but it is absent from
-    # the prompt and must not increase the active context-pressure signal.
+    # Excluded source and trimmed tool output remain useful accounting evidence,
+    # but neither is present in the active handoff/context.
     return (
         accounting.codex_context_after_bytes
         + accounting.log_raw_bytes
         + accounting.tool_output_bytes
         + accounting.git_diff_bytes
         + accounting.log_truncated_bytes
-        + accounting.tool_output_truncated_bytes
     )
 
 
@@ -139,7 +138,10 @@ class TokenAccounting:
     log_raw_bytes: int = 0
     log_filtered_bytes: int = 0
     git_diff_bytes: int = 0
+    # Retained output can be included in an active handoff.  Raw and trimmed
+    # byte counts are audit-only evidence and must not inflate Context Guard.
     tool_output_bytes: int = 0
+    tool_output_raw_bytes: int = 0
     source_truncated_bytes: int = 0
     tool_output_truncated_bytes: int = 0
     log_truncated_bytes: int = 0
@@ -178,9 +180,11 @@ class TokenAccounting:
     ) -> None:
         if raw is None:
             return
+        retained_bytes = len(raw.encode("utf-8", errors="ignore"))
         if measured_bytes is None:
-            measured_bytes = len(raw.encode("utf-8", errors="ignore"))
-        self.tool_output_bytes += max(0, measured_bytes)
+            measured_bytes = retained_bytes
+        self.tool_output_bytes += retained_bytes
+        self.tool_output_raw_bytes += max(0, measured_bytes)
         if truncated:
             self.tool_output_truncated_bytes += max(0, truncated_bytes)
 
@@ -1477,6 +1481,9 @@ def orchestrate(
         unexpected_files = []
         if expected_files:
             unexpected_files = [item for item in changed_files if item not in expected_files]
+        # Always expose this quality-gate result.  Previously it was emitted
+        # only after a circuit trip, which made a normal failed run look clean.
+        diff_section["unexpected_files"] = unexpected_files
 
         no_test_command = test_section.get("status") == "unknown" and test_section.get("reason") == "test_command_not_found"
         handoff_risk = bool(context_circuit.tripped)
@@ -1526,6 +1533,7 @@ def orchestrate(
             "log_raw_bytes": handoff_accounting.get("log_raw_bytes"),
             "log_filtered_bytes": handoff_accounting.get("log_filtered_bytes"),
             "tool_output_bytes": handoff_accounting.get("tool_output_bytes"),
+            "tool_output_raw_bytes": handoff_accounting.get("tool_output_raw_bytes"),
             "tool_output_truncated_bytes": handoff_accounting.get("tool_output_truncated_bytes"),
             "log_truncated_bytes": handoff_accounting.get("log_truncated_bytes"),
             "source_truncated_bytes": handoff_accounting.get("source_truncated_bytes"),
