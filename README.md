@@ -79,6 +79,8 @@ The authoritative usage values are `real_input_tokens`, `real_output_tokens`, `r
 
 `max_budget` now limits the initial context estimate and is checked again against reported Codex usage. If a completed turn reports usage above the limit, the executor stops before requesting another turn and records `budget_exceeded: true`. A budget is a control guardrail, not a guarantee that billed usage can be retroactively undone.
 
+Before launch, TOA also applies `executors.codex.preflight_overhead_tokens`. The default `48000` is a conservative baseline observed on the release-test Mac; if the requested budget is below this fixed Codex input overhead plus the task prompt, TOA returns `budget_preflight_blocked` without starting Codex. Calibrate this value on a different machine.
+
 If no test command can be detected, a successful execution is reported as `final.status: "review_required"` rather than being mislabeled as a task failure. The task still needs human or project-specific validation.
 
 ## Benchmarking honestly

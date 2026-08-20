@@ -94,6 +94,8 @@ schema:
               type: integer
             sandbox:
               type: string
+            preflight_overhead_tokens:
+              type: integer
     context:
       type: object
       properties:

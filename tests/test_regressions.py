@@ -87,6 +87,7 @@ class CodexUsageTests(unittest.TestCase):
             fake_codex.chmod(0o755)
             config = orchestrator._load_config(None)
             config["executors"]["codex"]["binary"] = str(fake_codex)
+            config["executors"]["codex"]["preflight_overhead_tokens"] = 0
             task = orchestrator.TaskInput(raw="inspect", payload={"task": "inspect", "executor": "codex"})
             accounting = orchestrator.TokenAccounting(mode="orchestrated")
             result = orchestrator.CodexExecutor().run(task, root, config, ["example.py"], 1, accounting)
@@ -107,7 +108,31 @@ class CodexUsageTests(unittest.TestCase):
         result = orchestrator.CodexExecutor().run(task, PROJECT_ROOT, config, [], 1, accounting)
 
         self.assertFalse(result.success)
-        self.assertEqual(result.detail, "budget_preflight_blocked")
+        self.assertTrue(result.detail.startswith("budget_preflight_blocked"))
+
+    def test_codex_executor_blocks_when_fixed_overhead_exceeds_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            marker = root / "started"
+            fake_codex = root / "fake-codex"
+            fake_codex.write_text(
+                "#!/usr/bin/env python3\n"
+                f"open({str(marker)!r}, 'w').write('started')\n",
+                encoding="utf-8",
+            )
+            fake_codex.chmod(0o755)
+            config = orchestrator._load_config(None)
+            config["executors"]["codex"]["binary"] = str(fake_codex)
+            task = orchestrator.TaskInput(
+                raw="inspect",
+                payload={"task": "inspect", "executor": "codex", "max_budget": 6000},
+            )
+            accounting = orchestrator.TokenAccounting(mode="orchestrated")
+            result = orchestrator.CodexExecutor().run(task, root, config, [], 1, accounting)
+
+        self.assertFalse(result.success)
+        self.assertTrue(result.detail.startswith("budget_preflight_blocked"))
+        self.assertFalse(marker.exists())
 
     def test_codex_executor_stops_after_reported_budget_is_exceeded(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -121,6 +146,7 @@ class CodexUsageTests(unittest.TestCase):
             fake_codex.chmod(0o755)
             config = orchestrator._load_config(None)
             config["executors"]["codex"]["binary"] = str(fake_codex)
+            config["executors"]["codex"]["preflight_overhead_tokens"] = 0
             task = orchestrator.TaskInput(
                 raw="inspect",
                 payload={"task": "inspect", "executor": "codex", "max_budget": 20},

@@ -669,6 +669,7 @@ class CodexExecutor(_BaseExecutor):
         timeout = int(codex_cfg.get("command_timeout_seconds", config["controls"]["execution"].get("command_timeout_seconds", 120)))
         sandbox = str(codex_cfg.get("sandbox") or "workspace-write")
         model = str(codex_cfg.get("model") or task.target_model or "").strip()
+        fixed_overhead_tokens = int(codex_cfg.get("preflight_overhead_tokens", 48_000))
 
         scope_note = ""
         if selected_files:
@@ -680,14 +681,17 @@ class CodexExecutor(_BaseExecutor):
         prompt = task.task_text + scope_note
         accounting.budget_limit_tokens = task.max_budget
         estimated_prompt_tokens = _estimate_tokens(len(prompt.encode("utf-8", errors="ignore")))
-        if task.max_budget is not None and estimated_prompt_tokens > task.max_budget:
+        estimated_minimum_tokens = fixed_overhead_tokens + estimated_prompt_tokens
+        if task.max_budget is not None and estimated_minimum_tokens > task.max_budget:
             return ExecutionSummary(
                 False,
                 "codex",
                 attempt,
                 None,
                 "budget_preflight_blocked",
-                f"estimated_prompt_tokens={estimated_prompt_tokens} exceeds max_budget={task.max_budget}",
+                "estimated_minimum_tokens="
+                f"{estimated_minimum_tokens} (fixed_overhead={fixed_overhead_tokens}; prompt={estimated_prompt_tokens}) "
+                f"exceeds max_budget={task.max_budget}",
                 0.0,
             )
         cmd = [binary, "exec", "--json", "--sandbox", sandbox]
@@ -1481,7 +1485,11 @@ def orchestrate(
             and not unexpected_files
             and not handoff_risk
         )
-        if context_circuit.tripped:
+        budget_blocked = execution_obj.detail.startswith("budget_preflight_blocked")
+        budget_exceeded = execution_obj.detail.startswith("budget_exceeded")
+        if budget_blocked or budget_exceeded:
+            final_status = "budget_preflight_blocked" if budget_blocked else "budget_exceeded"
+        elif context_circuit.tripped:
             final_status = "interrupted"
         elif no_test_command and execution_obj.success and not unexpected_files:
             final_status = "review_required"

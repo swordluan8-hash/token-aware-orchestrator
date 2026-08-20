@@ -29,7 +29,7 @@ Use this skill when a coding task needs a bounded repository scope, a token budg
 }
 ```
 
-`max_budget` is a guardrail for the task. The preflight narrows the initial context estimate; after each reported completed turn, the executor compares the cumulative input-plus-output total against the limit and stops before another turn when it is exceeded. The reported usage already spent remains in the handoff.
+`max_budget` is a guardrail for the task. The preflight checks the configured fixed Codex overhead and narrows the initial context estimate; after each reported completed turn, the executor compares the cumulative input-plus-output total against the limit and stops before another turn when it is exceeded. The reported usage already spent remains in the handoff.
 
 ## Command
 

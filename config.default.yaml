@@ -22,6 +22,8 @@ executors:
     extra_args: []
     command_timeout_seconds: 600
     sandbox: workspace-write
+    # Conservative Mac baseline observed from the first real Codex run.
+    preflight_overhead_tokens: 48000
 
 context:
   max_candidate_bytes: 200000

@@ -34,6 +34,8 @@ executors:
     extra_args: []
     command_timeout_seconds: 600
     sandbox: workspace-write
+    # Calibrate this per machine; it prevents a budget smaller than Codex's fixed input overhead.
+    preflight_overhead_tokens: 48000
 
 context:
   max_candidate_bytes: 200000

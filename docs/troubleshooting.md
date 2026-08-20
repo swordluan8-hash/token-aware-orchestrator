@@ -28,6 +28,8 @@ codex exec --json "Reply only: ready"
 
 任务 prompt 或初始范围的估算已超过 `max_budget`，或者 Codex 已报告累计 usage 超限。缩小任务范围、拆分任务，或明确提高预算后重试。超限前已经产生的 usage 不会被撤销；检查 `handoff.accounting.budget_exceeded` 和实际 token 字段。
 
+如果 `budget_preflight_blocked` 显示固定开销过高，先查看 `executors.codex.preflight_overhead_tokens`。这是当前机器的保守 Codex 输入开销，不是项目文件大小；不要用 6,000 这样的预算启动一个固定开销已经接近 48,000 的 Codex 环境。
+
 ## `final.status: review_required`
 
 Codex 执行本身成功，但仓库没有可自动检测的测试命令。补充项目测试命令或人工检查 `diff` 后，才能把任务视为完成。
