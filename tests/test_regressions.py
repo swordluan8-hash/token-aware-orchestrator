@@ -181,6 +181,23 @@ class CodexUsageTests(unittest.TestCase):
 
 
 class PersistenceTests(unittest.TestCase):
+    def test_preflight_block_is_not_counted_as_codex_call(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            repo.mkdir()
+            import subprocess
+
+            subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+            output = Path(tmp) / "runs" / "blocked.json"
+            task = json.dumps({"task": "read only", "executor": "codex", "max_budget": 6000})
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = orchestrator.main(["--task", task, "--repo", str(repo), "--output", str(output)])
+            payload = json.loads(output.read_text(encoding="utf-8"))
+
+        self.assertEqual(result, 1)
+        self.assertEqual(payload["handoff"]["final"]["status"], "budget_preflight_blocked")
+        self.assertEqual(payload["handoff"]["accounting"]["codex_direct_calls"], 0)
+
     def test_cli_writes_complete_handoff_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "repo"

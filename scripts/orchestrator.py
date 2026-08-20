@@ -1682,7 +1682,6 @@ def orchestrate(
             escalated = True
             accounting.escalation_count += 1
             final_executor_mode = "codex"
-            accounting.codex_direct_calls += 1
             if not context_circuit.tripped:
                 execution = _run_executor(
                     "codex",
@@ -1694,6 +1693,8 @@ def orchestrate(
                     accounting,
                     context_circuit=context_circuit,
                 )
+                if not execution.detail.startswith("budget_preflight_blocked"):
+                    accounting.codex_direct_calls += 1
                 maybe_abort_after("codex_escalation")
             if context_circuit.tripped:
                 handoff = build_handoff(execution, escalated)
@@ -1710,9 +1711,9 @@ def orchestrate(
 
     else:
         executor_name = "codex" if route.route == "codex_direct" else "command"
-        if executor_name == "codex":
-            accounting.codex_direct_calls += 1
         execution = _run_executor(executor_name, config, task, repo_path, selected, 1, accounting, context_circuit=context_circuit)
+        if executor_name == "codex" and not execution.detail.startswith("budget_preflight_blocked"):
+            accounting.codex_direct_calls += 1
         maybe_abort_after("codex_direct" if executor_name == "codex" else "command_execution")
         final_executor_mode = route.executor_mode
 
